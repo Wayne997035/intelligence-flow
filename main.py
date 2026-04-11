@@ -5,6 +5,7 @@ from src.collectors.stock_collector import StockCollector
 from src.collectors.news_collector import NewsCollector
 from src.collectors.tech_collector import TechCollector
 from src.collectors.hf_collector import HFCollector
+from src.collectors.arxiv_collector import ArxivCollector
 from src.ai.analyzer import AIAnalyzer
 from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
@@ -18,6 +19,7 @@ def run_job():
     news_fetcher = NewsCollector()
     tech_fetcher = TechCollector()
     hf_fetcher = HFCollector()
+    arxiv_fetcher = ArxivCollector()
     analyzer = AIAnalyzer()
     discord = DiscordSender()
     notion = NotionSender()
@@ -28,11 +30,12 @@ def run_job():
         tw_stocks = stock_fetcher.fetch_tw_stocks()
         stock_news = news_fetcher.fetch_stock_news()
         
-        # 2. 抓取 AI 技術資料 (NewsAPI + Hacker News + GitHub + Hugging Face)
+        # 2. 抓取 AI 技術資料 (NewsAPI + Hacker News + GitHub + Hugging Face + arXiv)
         ai_official_news = news_fetcher.fetch_ai_tech_news()
         ai_community_data = tech_fetcher.fetch_all_community_ai()
         hf_data = hf_fetcher.fetch_all_hf()
-        all_ai_tech_data = ai_official_news + ai_community_data + hf_data
+        arxiv_data = arxiv_fetcher.fetch_all_arxiv()
+        all_ai_tech_data = ai_official_news + ai_community_data + hf_data + arxiv_data
         
         # 3. 處理第一篇：股票報價 + 產業分析
         stocks_info = "\n".join([f"{s['symbol']}: {s['price']} ({s['change']})" for s in us_stocks + tw_stocks])

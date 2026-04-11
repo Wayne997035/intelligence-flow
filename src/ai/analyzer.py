@@ -1,102 +1,98 @@
 from google import genai
-from openai import OpenAI
+from groq import Groq
 from src.config import Config
 from src.utils.logger import logger
+import signal
+
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException
 
 class AIAnalyzer:
     def __init__(self):
-        self.openai_client = None
-        self.gemini_client = None
-        
-        if Config.OPENAI_API_KEY and not Config.OPENAI_API_KEY.startswith("AIzaSy"):
-            logger.info("Using OpenAI (GPT-4o) for analysis.")
-            self.openai_client = OpenAI(api_key=Config.OPENAI_API_KEY)
-        elif Config.OPENAI_API_KEY and Config.OPENAI_API_KEY.startswith("AIzaSy"):
-            logger.info("Using Google Gemini (New SDK) for analysis.")
-            self.gemini_client = genai.Client(api_key=Config.OPENAI_API_KEY)
-        else:
-            logger.warning("No valid AI API Key found.")
+        self.gemini_client = genai.Client(api_key=Config.GEMINI_API_KEY) if Config.GEMINI_API_KEY else None
+        self.groq_client = Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
+        logger.info("Analyzer initialized with Gemini (Primary) and Groq (Fallback).")
 
     def analyze_stock_market(self, stocks_info, news):
-        """分析股票及相關產業新聞，要求 AI 附上 URL"""
-        if not self.openai_client and not self.gemini_client:
-            return "ERROR: 無法調用 AI API"
-        
-        # 建立新聞對照表，讓 AI 可以附上正確的 URL
-        news_str = "\n".join([f"新聞 {i+1}:\n標題: {n['title']}\n來源連結: {n['url']}\n摘要: {n['desc']}" for i, n in enumerate(news)])
-        
+        news_str = "\n".join([f"新聞 {i+1}:\n標題: {n['title']}\n來源網址: {n['url']}\n摘要: {n['desc']}" for i, n in enumerate(news)])
         prompt = f"""
         你是一位資深科技投資分析師。請分析以下股票數據與相關產業新聞。
-        
-        股票數據概況：
-        {stocks_info}
-        
-        待分析新聞 (請確實引用新聞中的來源連結)：
+        股票數據概況：{stocks_info}
+        待分析新聞清單：
         {news_str}
         
-        請嚴格按照以下格式輸出：
-        
+        請嚴格按照以下格式輸出，每個欄位請獨立一行，URL 必須完全複製我提供的「來源網址」：
         [SECTION_SUMMARY]
         (整體市場摘要)
-        
+
         [NEWS_ITEM]
         TITLE: (標題)
-        URL: (來源連結)
-        SUMMARY: (1-2 行摘要)
+        URL: (請務必精確複製對應新聞的「來源網址」)
+        SUMMARY: (摘要)
         INSIGHT: (深度洞察)
-        
+
         [EXPERT_VIEW]
         (最終總結)
         """
         return self._get_ai_response(prompt)
 
     def analyze_ai_tech(self, news):
-        """分析最新的 AI 技術知識，要求 AI 附上 URL"""
-        if not self.openai_client and not self.gemini_client:
-            return "ERROR: 無法調用 AI API"
-        
-        news_str = "\n".join([f"技術情報 {i+1}:\n標題: {n['title']}\n來源連結: {n['url']}\n細節: {n['desc']}" for i, n in enumerate(news)])
-        
+        news_str = "\n".join([f"技術情報 {i+1}:\n標題: {n['title']}\n來源網址: {n['url']}\n細節: {n['desc']}" for i, n in enumerate(news)])
         prompt = f"""
-        你是一位專注於前沿技術的 AI 觀察家。請分析以下最新的模型動態、爆紅開源項目與學術論文。
-        特別注意 Hugging Face 上的趨勢模型與 Daily Papers。
-        
-        技術情報清單 (請確實引用對應的來源連結)：
+        你是一位極客 (Geek) 風格的 AI 技術架構師與開源觀察家。請分析以下最新的模型動態與技術進展。
+        技術情報清單：
         {news_str}
         
-        請嚴格按照以下格式輸出：
+        重點觀察方向：
+        1. 核心架構突破 (如 Transformer 改進、Mamba 等新架構)。
+        2. AI Agent 技能與自主性提升 (Tool Use, Planning, Multi-agent)。
+        3. GitHub 熱門項目中的實戰工具、庫與開源模型權重發布。
+        4. 學術論文中的前沿趨勢 (SOTA 追蹤)。
         
+        請嚴格按照以下格式輸出，每個欄位請獨立一行，URL 必須完全複製我提供的「來源網址」：
         [SECTION_SUMMARY]
-        (AI 技術發展概況摘要)
-        
+        (技術演進與開源社群趨勢概況)
+
         [TECH_ITEM]
-        TITLE: (技術或模型名稱)
-        URL: (對應的來源連結)
-        SUMMARY: (更新重點)
-        INSIGHT: (影響分析)
-        
+        TITLE: (技術/項目名稱)
+        URL: (請務必精確複製對應情報的「來源網址」)
+        SUMMARY: (技術亮點/核心邏輯)
+        INSIGHT: (架構分析/對開發者的實際影響/Agent 技能點評)
+
         [FUTURE_OUTLOOK]
-        (未來趨勢總結)
+        (未來技術趨勢預測與開源競爭格局)
         """
         return self._get_ai_response(prompt)
 
     def _get_ai_response(self, prompt):
-        try:
-            if self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model=Config.AI_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7
-                )
-                return response.choices[0].message.content
-            elif self.gemini_client:
-                # 使用新版 SDK 的調用方式，並設定為 gemini-flash-latest 以自動對應最新穩定版本
-                model_name = Config.AI_MODEL if not Config.AI_MODEL.startswith("gpt") else "gemini-flash-latest"
+        # 1. 優先嘗試 Gemini
+        if self.gemini_client:
+            try:
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)
                 response = self.gemini_client.models.generate_content(
-                    model=model_name,
+                    model=Config.AI_MODEL,
                     contents=prompt
                 )
-                return response.text if hasattr(response, 'text') else "ERROR: AI 回傳內容為空"
-        except Exception as e:
-            logger.error(f"AI Analysis failed: {e}")
-            return f"ERROR: {str(e)}"
+                signal.alarm(0)
+                return response.text
+            except Exception as e:
+                signal.alarm(0)
+                logger.warning(f"Gemini failed (trying Groq): {e}")
+
+        # 2. 備援嘗試 Groq
+        if self.groq_client:
+            logger.info("Switching to Groq fallback.")
+            try:
+                response = self.groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model="llama-3.3-70b-versatile"
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"Groq fallback failed: {e}")
+        
+        return "ERROR: 所有 AI 服務皆不可用"

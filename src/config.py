@@ -4,9 +4,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # AI Analysis (Supports OpenAI or Gemini)
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
-    AI_MODEL = os.getenv("AI_MODEL", "gpt-4o")
+    # AI Analysis (Supports Gemini & Groq)
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    AI_MODEL = os.getenv("AI_MODEL", "gemini-2.5-flash")
     
     # Social & News
     NEWS_API_KEY = os.getenv("NEWS_API_KEY")
