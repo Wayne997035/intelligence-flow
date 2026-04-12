@@ -93,8 +93,3 @@ touch .env.local
 - 不要提交任何 `.env` 類檔案或金鑰
 - `.gitignore` 已忽略 `.env`, `.env.local`, `.env.*`
 - 若曾提交過機敏資料，請先輪替金鑰再推送遠端
-
-## 參考文件
-
-- [CODEX.md](./CODEX.md)
-- [docs/review-and-roadmap.md](./docs/review-and-roadmap.md)
