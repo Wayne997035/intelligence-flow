@@ -29,6 +29,21 @@ class OfficialAICollector:
                 "url": "https://developers.googleblog.com/feeds/posts/default?alt=rss",
                 "keywords": ["gemini", "gemma", "ai", "model", "agent", "vertex", "developer"],
             },
+            {
+                "name": "OpenAI News RSS",
+                "url": "https://openai.com/news/rss.xml",
+                "keywords": [
+                    "openai",
+                    "gpt",
+                    "api",
+                    "model",
+                    "release",
+                    "agent",
+                    "codex",
+                    "chatgpt",
+                    "responses",
+                ],
+            },
         ]
         self.html_sources = [
             {
@@ -44,25 +59,6 @@ class OfficialAICollector:
                     "api",
                     "sonnet",
                     "opus",
-                ],
-            },
-            {
-                "name": "OpenAI Product Releases",
-                "url": "https://openai.com/news/product-releases/",
-                "link_prefixes": ["/index/", "/news/"],
-                "keywords": ["gpt", "openai", "model", "codex", "agent", "search", "api"],
-                "fallback_feed_url": "https://openai.com/news/rss.xml",
-                "fallback_feed_source_name": "OpenAI News RSS",
-                "fallback_feed_keywords": [
-                    "openai",
-                    "gpt",
-                    "api",
-                    "model",
-                    "release",
-                    "agent",
-                    "codex",
-                    "chatgpt",
-                    "responses",
                 ],
             },
         ]
