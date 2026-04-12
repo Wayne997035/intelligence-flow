@@ -43,11 +43,11 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
     quotas = [
         ("official_news", 3),
         ("github_release", 2),
-        ("github_repo", 2),
+        ("github_repo", 3),
         ("model_release", 2),
-        ("research", 2),
+        ("research", 1),
         ("news", 2),
-        ("community", 1),
+        ("community", 2),
     ]
     selected: list = []
     selected_urls: set[str] = set()
@@ -122,21 +122,29 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
 
     stock_priority = Config.US_STOCKS + Config.TW_STOCKS
     ai_priority = [
-        "managed agents",
-        "Claude managed agents",
+        "Claude",
+        "Gemini",
+        "xAI",
+        "Grok",
+        "Codex",
+        "ChatGPT",
         "OpenAI",
         "Anthropic",
-        "Gemini",
+        "model release",
+        "agent",
+        "agentic",
+        "skill",
+        "workflow",
+        "tool use",
         "GitHub Release",
         "GPT",
-        "Claude",
         "DeepSeek",
         "Llama",
         "Qwen",
         "Mistral",
-        "Agent",
         "GitHub",
         "arXiv",
+        "managed agents",
     ]
 
     stock_news_ranked = deduplicate_and_rank(

@@ -36,12 +36,18 @@ class NewsCollector:
             "model release",
             "reasoning model",
             "AI agent",
+            "agentic workflow",
+            "AI skill",
             "managed agents",
             "Claude managed agents",
             "Anthropic managed agents",
             "OpenAI",
+            "ChatGPT",
+            "Codex",
             "Anthropic",
             "Google Gemini",
+            "xAI",
+            "Grok",
             "Llama",
             "Qwen",
             "Mistral",
@@ -56,14 +62,24 @@ class NewsCollector:
             days_back=Config.AI_NEWS_LOOKBACK_DAYS,
             source_type="news",
         )
-        managed_agent_focus = self._fetch_by_keywords(
-            ["managed agents", "Claude managed agents", "Anthropic managed agents"],
-            domains="anthropic.com,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com",
+        feature_focus = self._fetch_by_keywords(
+            [
+                "managed agents",
+                "agent framework",
+                "agent skill",
+                "agent tooling",
+                "tool use",
+                "workflow automation",
+                "Codex",
+                "Grok",
+                "ChatGPT",
+            ],
+            domains="anthropic.com,openai.com,github.blog,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com",
             page_size=10,
             days_back=Config.AI_NEWS_LOOKBACK_DAYS,
             source_type="news",
         )
-        return broad + managed_agent_focus
+        return broad + feature_focus
 
     def _fetch_by_keywords(
         self,

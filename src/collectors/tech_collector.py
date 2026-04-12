@@ -15,6 +15,10 @@ class TechCollector:
             "Claude",
             "Gemini",
             "OpenAI",
+            "ChatGPT",
+            "Codex",
+            "xAI",
+            "Grok",
             "GPT",
             "DeepSeek",
             "Llama",
@@ -22,8 +26,9 @@ class TechCollector:
             "Qwen",
             "RAG",
             "AI Agent",
+            "Agentic",
+            "Skill",
             "VLM",
-            "Grok",
             "BitNet",
         ]
 
@@ -61,8 +66,11 @@ class TechCollector:
         last_week = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
         queries = [
             f"topic:llm stars:>200 pushed:>{last_week}",
+            f"topic:generative-ai stars:>120 pushed:>{last_week}",
             f"topic:ai-agent stars:>50 pushed:>{last_week}",
             f"topic:rag stars:>50 pushed:>{last_week}",
+            f"agent in:name,description stars:>120 pushed:>{last_week}",
+            f"skill in:name,description stars:>80 pushed:>{last_week}",
         ]
         headers = {
             "Accept": "application/vnd.github+json",

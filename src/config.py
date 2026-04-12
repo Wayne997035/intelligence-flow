@@ -9,9 +9,9 @@ except ImportError:  # pragma: no cover - optional in dry-run environments
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# Local developer overrides should win over generic .env defaults.
-load_dotenv(PROJECT_ROOT / ".env.local")
-load_dotenv(PROJECT_ROOT / ".env")
+# Default local config source. Can be overridden by ENV_FILE.
+ENV_FILE = os.getenv("ENV_FILE", ".env.local")
+load_dotenv(PROJECT_ROOT / ENV_FILE)
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -51,7 +51,7 @@ class Config:
     MAX_DESC_LENGTH = int(os.getenv("MAX_DESC_LENGTH", "220"))
     INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "15"))
     STOCK_NEWS_LOOKBACK_DAYS = int(os.getenv("STOCK_NEWS_LOOKBACK_DAYS", "7"))
-    AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "14"))
+    AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
     HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
     HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "12"))
     STATE_FILE = os.getenv("STATE_FILE", "data/run_state.json")
