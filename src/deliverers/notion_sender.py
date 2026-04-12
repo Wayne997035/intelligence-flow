@@ -47,7 +47,9 @@ class NotionSender:
             return None
 
     def _parse_and_build_blocks(self, text, main_heading, bg_color):
-        """解析 AI 的結構化輸出並轉化為豐富的 Notion Blocks，隱藏 URL"""
+        """解析 AI 的結構化輸出並轉化為豐富的 Notion Blocks"""
+        import re
+        
         blocks = [
             {"object": "block", "type": "heading_2", "heading_2": {
                 "rich_text": [{"text": {"content": main_heading}}],
@@ -56,58 +58,64 @@ class NotionSender:
             {"object": "block", "type": "divider", "divider": {}}
         ]
 
-        lines = text.split('\n')
-        current_item = {}
-        section_summary = ""
-        footer_view = ""
-        
-        # 逐行解析狀態機
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            
-            # 結算 item
-            if line.startswith('[') and current_item.get('title') and current_item.get('url'):
-                self._append_item_blocks(blocks, current_item, bg_color)
-                current_item = {}
-
-            if line.startswith('[SECTION_SUMMARY]'):
-                pass # 標記開始抓取摘要
-            elif line.startswith('[EXPERT_VIEW]') or line.startswith('[FUTURE_OUTLOOK]'):
-                pass # 標記開始抓取總結
-            elif line.startswith('[NEWS_ITEM]') or line.startswith('[TECH_ITEM]'):
-                current_item = {}
-            elif line.startswith('TITLE:'):
-                current_item['title'] = line.replace('TITLE:', '').strip()
-            elif line.startswith('URL:'):
-                current_item['url'] = line.replace('URL:', '').strip()
-            elif line.startswith('SUMMARY:'):
-                current_item['summary'] = line.replace('SUMMARY:', '').strip()
-            elif line.startswith('INSIGHT:'):
-                current_item['insight'] = line.replace('INSIGHT:', '').strip()
-            elif not line.startswith('['):
-                # 處理非標籤行的文字歸屬
-                if "📌" not in text.split(line)[0] and not section_summary:
-                    section_summary = line
-                elif "[EXPERT_VIEW]" in text.split(line)[0] or "[FUTURE_OUTLOOK]" in text.split(line)[0]:
-                    footer_view += line + " "
-
-        # 處理最後一個 item
-        if current_item.get('title') and current_item.get('url'):
-            self._append_item_blocks(blocks, current_item, bg_color)
-
-        # 插入摘要（放在標題後）
-        if section_summary:
-            blocks.insert(2, {"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"text": {"content": section_summary}}],
+        # 1. 摘要
+        summary_match = re.search(r'\[SECTION_SUMMARY\]\n?(.*?)(?=\n\n?\[|$)', text, re.DOTALL)
+        if summary_match:
+            blocks.append({"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"text": {"content": summary_match.group(1).strip()}}],
                 "color": "gray"
             }})
 
-        # 插入頁尾觀點
-        if footer_view:
+        # 2. 項目 (NEWS_ITEM 或 TECH_ITEM)
+        item_pattern = re.compile(r'\[(?:NEWS_ITEM|TECH_ITEM)\](.*?)(?=\n\n?\[|$)', re.DOTALL)
+        items = item_pattern.findall(text)
+
+        def extract_field(pattern, block_text):
+            # 尋找該欄位，直到遇到下一個欄位標籤或 block 結束
+            match = re.search(pattern + r':\s*(.*?)(?=\s*(?:TITLE|URL|SUMMARY|INSIGHT|\[|$))', block_text, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else ""
+        
+        for item_content in items:
+            t_str = extract_field('TITLE', item_content)
+            u_str = extract_field('URL', item_content)
+            s_str = extract_field('SUMMARY', item_content)
+            i_str = extract_field('INSIGHT', item_content)
+            
+            if t_str and u_str:
+                # 標題
+                blocks.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                    {"text": {"content": t_str}}
+                ]}})
+                
+                # 摘要
+                if s_str:
+                    blocks.append({"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [
+                        {"text": {"content": s_str}}
+                    ]}})
+                    
+                # 洞察 + 連結
+                if i_str:
+                    blocks.append({
+                        "object": "block",
+                        "type": "callout",
+                        "callout": {
+                            "rich_text": [
+                                {"text": {"content": f"深度洞察: {i_str}\n\n"}},
+                                {"text": {"content": "🔗 查看原文", "link": {"url": u_str}}, "annotations": {"italic": True, "bold": True, "color": "blue"}}
+                            ],
+                            "icon": {"emoji": "💡"},
+                            "color": "blue_background" if "blue" in bg_color else "gray_background"
+                        }
+                    })
+                blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}})
+
+        # 3. 頁尾
+        outlook_match = re.search(r'\[(?:FUTURE_OUTLOOK|EXPERT_VIEW)\]\n?(.*?)(?=\n\n?\[|$)', text, re.DOTALL)
+        if outlook_match:
+            label = "🔮 未來展望" if "[FUTURE_OUTLOOK]" in text else "🕵️ 專家總結"
             blocks.append({"object": "block", "type": "divider", "divider": {}})
             blocks.append({"object": "block", "type": "quote", "quote": {
-                "rich_text": [{"text": {"content": f"🎯 總結展望: {footer_view.strip()}"}}]
+                "rich_text": [{"text": {"content": f"🎯 {label}: {outlook_match.group(1).strip()}"}}]
             }})
             
         return blocks

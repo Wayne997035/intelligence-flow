@@ -8,17 +8,23 @@ class DiscordSender:
         """發送報價 + 股票分析 (第一篇)"""
         if not Config.DISCORD_WEBHOOK_URL: return
         
-        # 報價部分
-        us_lines = "\n".join([f"{s['symbol']}\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in us_stocks])
-        tw_lines = "\n".join([f"{s['symbol']}\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in tw_stocks])
+        us_lines = "\n\n".join([f"**{s['symbol']}**\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in us_stocks])
+        tw_lines = "\n\n".join([f"**{s['symbol']}**\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in tw_stocks])
 
-        # 清洗 AI 分析文字
-        clean_text = self._format_text_with_links(analysis_text)
+        clean_text_dict = self._format_text_with_links_dict(analysis_text)
         
         description = f"🇺🇸 **美股**\n{us_lines}\n\n----------------\n"
         description += f"🇹🇼 **台股**\n{tw_lines}\n\n"
-        description += f"----------------\n{clean_text}\n"
+        description += f"----------------\n"
         
+        if clean_text_dict['summary']:
+            description += f"📌 **摘要**\n{clean_text_dict['summary']}\n\n"
+            
+        description += clean_text_dict['items_text']
+        
+        if clean_text_dict['outlook']:
+            description += f"\n{clean_text_dict['outlook_label']}\n{clean_text_dict['outlook']}\n"
+
         if notion_url:
             description += f"\n📒 [**在 Notion 查看完整深度分析報告**]({notion_url})"
 
@@ -39,9 +45,17 @@ class DiscordSender:
         """發送 AI 技術前沿情報 (第二篇)"""
         if not Config.DISCORD_WEBHOOK_URL or ai_text.startswith("ERROR"): return
         
-        clean_text = self._format_text_with_links(ai_text)
-        description = f"{clean_text}\n"
+        clean_text_dict = self._format_text_with_links_dict(ai_text)
         
+        description = ""
+        if clean_text_dict['summary']:
+            description += f"📌 **摘要**\n{clean_text_dict['summary']}\n\n"
+            
+        description += clean_text_dict['items_text']
+        
+        if clean_text_dict['outlook']:
+            description += f"\n{clean_text_dict['outlook_label']}\n{clean_text_dict['outlook']}\n"
+
         if notion_url:
             description += f"\n📒 [**在 Notion 查看完整 AI 技術情報**]({notion_url})"
 
@@ -58,51 +72,46 @@ class DiscordSender:
         except Exception as e:
             logger.error(f"AI Tech Report send failed: {e}")
 
-    def _format_text_with_links(self, text):
-        """清洗 AI 標籤並轉化為 Markdown 連結，隱藏原始網址"""
-        lines = text.split('\n')
-        new_lines = []
+    def _format_text_with_links_dict(self, text):
+        """解析全文並回傳包含各區塊的字典，以便靈活排版"""
+        import re
+        text = re.sub(r'^-+$', '', text, flags=re.MULTILINE)
         
-        current_item = {}
+        summary_match = re.search(r'\[SECTION_SUMMARY\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
+        outlook_match = re.search(r'\[(?:FUTURE_OUTLOOK|EXPERT_VIEW)\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
         
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        summary = ""
+        if summary_match:
+            summary = re.sub(r'TITLE:|URL:|SUMMARY:|INSIGHT:', '', summary_match.group(1).strip()).strip()
+
+        item_blocks = re.findall(r'\[(?:NEWS_ITEM|TECH_ITEM)\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
+        items_lines = []
+        outlook = outlook_match.group(1).strip() if outlook_match else ""
+
+        def extract_field(pattern, block_text):
+            # 尋找該欄位，直到遇到下一個欄位標籤或 block 結束
+            match = re.search(pattern + r':\s*(.*?)(?=\s*(?:TITLE|URL|SUMMARY|INSIGHT|\[|$))', block_text, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else ""
+
+        if item_blocks:
+            display_items = item_blocks[:5] # 只在 Discord 顯示 5 則
+            for block in display_items:
+                t_str = extract_field('TITLE', block)
+                u_str = extract_field('URL', block)
+                s_str = extract_field('SUMMARY', block)
+                i_str = extract_field('INSIGHT', block)
                 
-            # 檢查是否遇到新標籤，若是則先結算 current_item
-            if line.startswith('[') and current_item.get('title') and current_item.get('url'):
-                new_lines.append(f"----------------\n**[{current_item['title']}]({current_item['url']})**")
-                if current_item.get('summary'): new_lines.append(f"• {current_item['summary']}")
-                if current_item.get('insight'): new_lines.append(f"> 💡 {current_item['insight']}")
-                current_item = {}
+                if t_str and u_str:
+                    items_lines.append("----------------")
+                    items_lines.append(f"**[{t_str}]({u_str})**")
+                    if s_str: items_lines.append(f"• {s_str}")
+                    if i_str: items_lines.append(f"> 💡 {i_str}")
 
-            if line.startswith('[SECTION_SUMMARY]'):
-                new_lines.append("📌 **摘要**")
-            elif line.startswith('[EXPERT_VIEW]'):
-                new_lines.append("\n🕵️ **專家總結**")
-            elif line.startswith('[FUTURE_OUTLOOK]'):
-                new_lines.append("\n🔮 **未來展望**")
-            elif line.startswith('[NEWS_ITEM]') or line.startswith('[TECH_ITEM]'):
-                current_item = {}
-            elif line.startswith('TITLE:'):
-                current_item['title'] = line.replace('TITLE:', '').strip()
-            elif line.startswith('URL:'):
-                current_item['url'] = line.replace('URL:', '').strip()
-            elif line.startswith('SUMMARY:'):
-                current_item['summary'] = line.replace('SUMMARY:', '').strip()
-            elif line.startswith('INSIGHT:'):
-                current_item['insight'] = line.replace('INSIGHT:', '').strip()
-            elif not line.startswith('['):
-                new_lines.append(line)
-
-        # 處理最後一個 item
-        if current_item.get('title') and current_item.get('url'):
-            new_lines.append(f"----------------\n**[{current_item['title']}]({current_item['url']})**")
-            if current_item.get('summary'): new_lines.append(f"• {current_item['summary']}")
-            if current_item.get('insight'): new_lines.append(f"> 💡 {current_item['insight']}")
-
-        final_text = "\n".join(new_lines)
-        # 清理多餘空行
-        final_text = re.sub(r"\n{3,}", "\n\n", final_text)
-        return final_text.strip()
+        label = "🔮 **未來展望**" if "[FUTURE_OUTLOOK]" in text else "🕵️ **專家總結**"
+        
+        return {
+            "summary": summary,
+            "items_text": "\n".join(items_lines).strip(),
+            "outlook": outlook,
+            "outlook_label": label
+        }

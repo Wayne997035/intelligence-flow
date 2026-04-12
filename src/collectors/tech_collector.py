@@ -6,13 +6,18 @@ import os
 class TechCollector:
     def __init__(self):
         self.github_token = os.getenv("GITHUB_TOKEN")
-        # 核心主力關鍵字：Claude, Gemini, Llama, DeepSeek, RAG, AI Agent, xAI, Grok, Codex
+        # 核心主力關鍵字：包含主流模型與前沿技術 (Mistral 是龍蝦廠商, OpenClaw 是 Agent 核心專案)
         self.primary_focus = [
-            'Claude', 'Gemini', 'OpenAI', 'GPT', 'DeepSeek', 
-            'Llama', 'RAG', 'AI Agent', 'VLM', 'xAI', 'Grok', 'Codex'
+            'Claude', 'Gemini', 'OpenAI', 'GPT', 'DeepSeek', 'Llama', 
+            'Mistral', 'Mixtral', 'Qwen', 'InternLM', 'MiniCPM',
+            'RAG', 'AI Agent', 'VLM', 'xAI', 'Grok', 'Mamba', 'Jamba', 
+            'BitNet', 'OpenClaw', 'ClawBench'
         ]
         # 輔助技術關鍵字
-        self.tech_keywords = ['Open Source LLM', 'Model update', 'GitHub trending AI', 'SOTA']
+        self.tech_keywords = [
+            'Open Source LLM', 'Model update', 'GitHub trending AI', 'SOTA',
+            'Flux AI', 'Sora Video', 'Kling AI', 'AgentOps', 'On-device AI'
+        ]
 
     def fetch_hacker_news_ai(self):
         """從 Hacker News 抓取主力 AI 技術討論"""
@@ -60,8 +65,8 @@ class TechCollector:
         """從 Reddit 搜尋主力技術看板 (ClaudeAI, OpenAI, GoogleGemini)"""
         logger.info("Searching Reddit for specialized AI updates...")
         results = []
-        # 鎖定主力三大看板 + 全球技術熱點 singularity
-        subreddits = ['ClaudeAI', 'OpenAI', 'GoogleGemini', 'singularity']
+        # 鎖定主力三大看板 + 全球技術熱點 singularity + 極客看板 LocalLLaMA
+        subreddits = ['ClaudeAI', 'OpenAI', 'GoogleGemini', 'singularity', 'LocalLLaMA', 'MachineLearning']
         
         try:
             for sub in subreddits:

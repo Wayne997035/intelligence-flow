@@ -5,7 +5,7 @@ class HFCollector:
     def __init__(self):
         self.base_url = "https://huggingface.co/api"
 
-    def fetch_trending_models(self, limit=5):
+    def fetch_trending_models(self, limit=15):
         """抓取 Hugging Face 當前熱門模型"""
         logger.info(f"Fetching top {limit} trending models from Hugging Face...")
         # 使用新的 trending API
@@ -31,10 +31,11 @@ class HFCollector:
             logger.error(f"HF Models fetch failed: {e}")
         return results
 
-    def fetch_daily_papers(self, limit=5):
+    def fetch_daily_papers(self, limit=20):
         """抓取 Hugging Face Daily Papers"""
         logger.info(f"Fetching top {limit} daily papers from Hugging Face...")
         url = f"{self.base_url}/daily_papers?limit={limit}"
+
         results = []
         try:
             resp = requests.get(url, timeout=10)

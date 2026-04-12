@@ -8,29 +8,26 @@ class NewsCollector:
         self.api_key = Config.NEWS_API_KEY
         
     def fetch_stock_news(self):
-        """抓取與指定股票及半導體產業相關的高質量新聞"""
-        # 排除雜訊來源，鎖定權威財經媒體
-        domains = "reuters.com,bloomberg.com,wsj.com,cnbc.com,techcrunch.com"
-        keywords = ['Nvidia Blackwell', 'TSMC 2nm', 'AI chip demand', 'Semiconductor supply chain']
-        return self._fetch_by_keywords(keywords, domains=domains, pageSize=8, days_back=7)
+        """根據關注的股票清單抓取相關的高質量新聞"""
+        domains = "reuters.com,bloomberg.com,wsj.com,cnbc.com,techcrunch.com,finance.yahoo.com"
+        # 動態生成關鍵字：股票代碼 + 半導體/AI 供應鏈關鍵字
+        stock_kws = Config.US_STOCKS + Config.TW_STOCKS + [
+            'Nvidia Blackwell', 'TSMC 2nm', 'AI chip demand', 
+            'Semiconductor supply chain', 'Earnings report', 'Price target'
+        ]
+        return self._fetch_by_keywords(stock_kws, domains=domains, pageSize=10, days_back=7)
 
     def fetch_ai_tech_news(self):
-        """抓取真正前沿、有討論度的 AI 技術與 GitHub 爆紅項目"""
-        # 排除 PyPI, LibHunt 等雜訊，鎖定權威技術媒體與部落格
-        domains = "techcrunch.com,venturebeat.com,theverge.com,github.blog,openai.com,anthropic.com,wired.com,arstechnica.com"
+        """抓取全球最新發布的模型、SOTA 論文與 AI 突破"""
+        domains = "openai.com,anthropic.com,github.blog,googleblog.com,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com"
         keywords = [
-            'Claude AI', 
-            'OpenAI o1', 
-            'Gemini AI', 
-            'Llama AI',
-            'DeepSeek AI',
-            'AI Agent',
-            'RAG technology',
-            'VLM',
-            'xAI Grok',
-            'Codex'
+            'New Model Release', 'SOTA', 'Foundation Model', 
+            'Claude 3.5', 'GPT-5', 'Gemini 2.0', 'Llama 4',
+            'Mistral AI', 'Mixtral', 'Qwen 2.5', 'InternLM',
+            'MiniCPM', 'AI Agent Architecture', 'OpenClaw', 
+            'Edge AI', 'BitNet', 'Mamba architecture', 'Video generation AI'
         ]
-        return self._fetch_by_keywords(keywords, domains=domains, pageSize=12, days_back=5)
+        return self._fetch_by_keywords(keywords, domains=domains, pageSize=15, days_back=3)
             
     def _fetch_by_keywords(self, keywords, domains=None, pageSize=10, days_back=5):
         if not self.api_key:
@@ -49,8 +46,8 @@ class NewsCollector:
                 'q': query,
                 'from': from_date,
                 'language': 'en',
-                'sortBy': 'relevancy', # 優先抓取最相關/熱門的新聞
-                'pageSize': pageSize
+                'sortBy': 'relevancy',
+                'pageSize': 20  # 設定為 20 則
             }
             if domains:
                 params['domains'] = domains
@@ -60,15 +57,12 @@ class NewsCollector:
             
             if 'articles' in res:
                 for a in res['articles']:
-                    # 再次過濾：確保標題包含我們感興趣的關鍵字
-                    title_upper = a['title'].upper()
-                    filter_kws = ['CLAUDE', 'OPENAI', 'GEMINI', 'LLAMA', 'DEEPSEEK', 'RAG', 'AGENT', 'AI', 'XAI', 'GROK', 'CODEX', 'NVDA', 'TSMC']
-                    if any(kw in title_upper for kw in filter_kws):
-                        all_news.append({
-                            'title': a['title'], 
-                            'url': a['url'], 
-                            'desc': a.get('description', '') or ''
-                        })
+                    # 放寬過濾條件：只要標題或內容有相關關鍵字就保留，不再使用嚴格白名單
+                    all_news.append({
+                        'title': a['title'], 
+                        'url': a['url'], 
+                        'desc': a.get('description', '') or ''
+                    })
         except Exception as e:
             logger.error(f"Error fetching news: {e}")
         return all_news

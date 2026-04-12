@@ -6,13 +6,11 @@ class ArxivCollector:
     def __init__(self):
         self.base_url = "http://export.arxiv.org/api/query"
 
-    def fetch_latest_ai_papers(self, limit=5):
-        """抓取 arXiv 最新 AI 相關論文 (cs.AI, cs.LG, cs.CL)"""
-        logger.info(f"Fetching top {limit} latest AI papers from arXiv...")
-        # cs.AI: Artificial Intelligence
-        # cs.LG: Machine Learning
-        # cs.CL: Computation and Language (NLP)
-        query = 'cat:cs.AI OR cat:cs.LG OR cat:cs.CL'
+    def fetch_latest_ai_papers(self, limit=20):
+        """抓取 arXiv 最新 AI 相關論文 (類別 + 關鍵字)"""
+        logger.info(f"Fetching top {limit} targeted AI papers from arXiv...")
+        # 結合類別篩選與核心關鍵字 (Agent, Optimization, Edge AI)
+        query = '(cat:cs.AI OR cat:cs.LG OR cat:cs.CL) AND (all:"AI Agent" OR all:"Foundation Model" OR all:"Edge AI")'
         url = f"{self.base_url}?search_query={query}&sortBy=submittedDate&sortOrder=descending&max_results={limit}"
         
         results = []

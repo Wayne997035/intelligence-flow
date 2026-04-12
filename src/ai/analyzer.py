@@ -16,54 +16,49 @@ class AIAnalyzer:
         self.groq_client = Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
         logger.info("Analyzer initialized with Gemini (Primary) and Groq (Fallback).")
 
-    def analyze_stock_market(self, stocks_info, news):
+    def analyze_stock_market(self, stocks_info, news, is_full_report=True):
         news_str = "\n".join([f"新聞 {i+1}:\n標題: {n['title']}\n來源網址: {n['url']}\n摘要: {n['desc']}" for i, n in enumerate(news)])
+        
         prompt = f"""
-        你是一位資深科技投資分析師。請分析以下股票數據與相關產業新聞。
-        股票數據概況：{stocks_info}
-        待分析新聞清單：
+        【重要指令：必須使用「繁體中文(台灣)」回答，嚴禁使用簡體字與大陸術語(如：不得使用芯片、服務器、軟件、性能等)】
+        
+        你是一位專門追蹤 {Config.US_STOCKS} 與 {Config.TW_STOCKS} 的資深投資分析師。
+        請根據以下報價與新聞撰寫詳盡報告。
+        
+        當前報價：{stocks_info}
+        待分析新聞：
         {news_str}
         
-        請嚴格按照以下格式輸出，每個欄位請獨立一行，URL 必須完全複製我提供的「來源網址」：
-        [SECTION_SUMMARY]
-        (整體市場摘要)
-
-        [NEWS_ITEM]
-        TITLE: (標題)
-        URL: (請務必精確複製對應新聞的「來源網址」)
-        SUMMARY: (摘要)
-        INSIGHT: (深度洞察)
-
-        [EXPERT_VIEW]
-        (最終總結)
+        分析要求：
+        1. 針對每家公司結合新聞進行深度點評，分析對股價的具體利多或利空。
+        2. 洞察必須包含專業的基本面支撐邏輯。
+        
+        格式：
+        [SECTION_SUMMARY] (整體市場摘要)
+        [NEWS_ITEM] TITLE: (標題) URL: (來源網址) SUMMARY: (摘要) INSIGHT: (專業深度洞察)
+        [EXPERT_VIEW] (總結與建議)
         """
         return self._get_ai_response(prompt)
 
-    def analyze_ai_tech(self, news):
-        news_str = "\n".join([f"技術情報 {i+1}:\n標題: {n['title']}\n來源網址: {n['url']}\n細節: {n['desc']}" for i, n in enumerate(news)])
+    def analyze_ai_tech(self, news, is_full_report=True):
+        news_str = "\n".join([f"技術情報 {i+1}:\n原始標題: {n['title']}\n來源網址: {n['url']}\n細節: {n['desc']}" for i, n in enumerate(news)])
+        
         prompt = f"""
-        你是一位極客 (Geek) 風格的 AI 技術架構師與開源觀察家。請分析以下最新的模型動態與技術進展。
-        技術情報清單：
+        【重要指令：必須使用「繁體中文(台灣)」回答，絕對嚴禁使用簡體字。技術術語必須使用台灣習慣用語。】
+        
+        你是一位極客風格的 AI 技術架構師。你的任務是從以下情報中分析最新出的、最具影響力的技術。
+        情報清單：
         {news_str}
         
-        重點觀察方向：
-        1. 核心架構突破 (如 Transformer 改進、Mamba 等新架構)。
-        2. AI Agent 技能與自主性提升 (Tool Use, Planning, Multi-agent)。
-        3. GitHub 熱門項目中的實戰工具、庫與開源模型權重發布。
-        4. 學術論文中的前沿趨勢 (SOTA 追蹤)。
+        分析要求：
+        1. TITLE 必須保留完整版本號(如 Gemma-4-31B-it, GLM-5.1)。
+        2. 必須包含每一項新出的模型、硬核研究(arXiv)或 Agent 運維工具。
+        3. SUMMARY 請寫出核心規格；INSIGHT 請寫出架構分析與開發者價值。
         
-        請嚴格按照以下格式輸出，每個欄位請獨立一行，URL 必須完全複製我提供的「來源網址」：
-        [SECTION_SUMMARY]
-        (技術演進與開源社群趨勢概況)
-
-        [TECH_ITEM]
-        TITLE: (技術/項目名稱)
-        URL: (請務必精確複製對應情報的「來源網址」)
-        SUMMARY: (技術亮點/核心邏輯)
-        INSIGHT: (架構分析/對開發者的實際影響/Agent 技能點評)
-
-        [FUTURE_OUTLOOK]
-        (未來技術趨勢預測與開源競爭格局)
+        格式：
+        [SECTION_SUMMARY] (技術演進摘要)
+        [TECH_ITEM] TITLE: (名稱/型號) URL: (來源網址) SUMMARY: (技術細節) INSIGHT: (深度評析)
+        [FUTURE_OUTLOOK] (未來預測)
         """
         return self._get_ai_response(prompt)
 
@@ -72,7 +67,7 @@ class AIAnalyzer:
         if self.gemini_client:
             try:
                 signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(30)
+                signal.alarm(60)
                 response = self.gemini_client.models.generate_content(
                     model=Config.AI_MODEL,
                     contents=prompt
