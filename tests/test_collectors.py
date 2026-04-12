@@ -1,6 +1,9 @@
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
+from src.collectors.official_ai_collector import OfficialAICollector
+from src.collectors.tech_collector import TechCollector
 from src.pipeline import (
     canonicalize_url,
     deduplicate_and_rank,
@@ -152,3 +155,78 @@ class TestPipeline(unittest.TestCase):
                 )
             )
         )
+
+    def test_deduplicate_and_rank_sorts_by_parsed_datetime_not_raw_string(self):
+        items = [
+            {
+                "title": "Older RFC item",
+                "url": "https://example.com/older-rfc",
+                "source_type": "official_news",
+                "published_at": "Sun, 09 Apr 2026 12:00:00 GMT",
+            },
+            {
+                "title": "Newer ISO item",
+                "url": "https://example.com/newer-iso",
+                "source_type": "official_news",
+                "published_at": "2026-04-10T08:00:00Z",
+            },
+        ]
+        ranked = deduplicate_and_rank(items, ["item"], limit=10)
+        self.assertEqual(ranked[0].url, "https://example.com/newer-iso")
+
+
+class _MockResponse:
+    def __init__(self, json_data=None, text="", status_code=200):
+        self._json_data = json_data
+        self.text = text
+        self.status_code = status_code
+
+    def json(self):
+        return self._json_data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class TestOfficialCollector(unittest.TestCase):
+    @patch("src.collectors.official_ai_collector.requests.get")
+    def test_claude_release_notes_uses_heading_anchor_and_link_fallback(self, mock_get):
+        html = """
+        <html><body>
+          <h3 id="apr-9-2026">April 9, 2026</h3>
+          <ul>
+            <li>We've launched the advisor tool in public beta.</li>
+          </ul>
+          <p><a href="/docs/en/release-notes/managed-agents">Claude Managed Agents in public beta</a></p>
+        </body></html>
+        """
+        mock_get.return_value = _MockResponse(text=html)
+
+        collector = OfficialAICollector()
+        items = collector._fetch_claude_platform_release_notes(limit=10)
+
+        urls = [item["url"] for item in items]
+        self.assertTrue(any("#apr-9-2026" in url for url in urls))
+        self.assertTrue(any("/release-notes/managed-agents" in url for url in urls))
+
+
+class TestTechCollector(unittest.TestCase):
+    def test_estimate_recent_star_delta_counts_only_recent_stars(self):
+        collector = TechCollector()
+        since_dt = datetime(2026, 4, 8, tzinfo=timezone.utc)
+
+        with patch.object(
+            collector.session,
+            "get",
+            return_value=_MockResponse(
+                json_data=[
+                    {"starred_at": "2026-04-10T00:00:00Z"},
+                    {"starred_at": "2026-04-09T10:00:00Z"},
+                    {"starred_at": "2026-04-01T10:00:00Z"},
+                ]
+            ),
+        ):
+            delta = collector._estimate_recent_star_delta("owner/repo", since_dt, max_pages=2)
+
+        self.assertEqual(delta, 2)

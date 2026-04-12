@@ -4,11 +4,12 @@ import json
 import signal
 from collections import Counter
 from dataclasses import asdict
+from datetime import timezone
 from typing import Callable
 
 from src.config import Config
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
-from src.pipeline import summarize_sources
+from src.pipeline import canonicalize_url, parse_published_at, summarize_sources
 from src.utils.logger import logger
 
 try:
@@ -31,6 +32,18 @@ def timeout_handler(signum, frame):  # pragma: no cover - signal plumbing
 
 
 class AIAnalyzer:
+    _REQUIRED_SOURCE_TYPES = ("official_news", "model_release", "github_release")
+    _SOURCE_RANK = {
+        "official_news": 0,
+        "github_release": 1,
+        "model_release": 2,
+        "research": 3,
+        "github_repo": 4,
+        "news": 5,
+        "community": 6,
+        "unknown": 9,
+    }
+
     def __init__(self, enable_ai: bool | None = None):
         self.enable_ai = Config.ENABLE_AI_ANALYSIS if enable_ai is None else enable_ai
         self.gemini_client = (
@@ -94,12 +107,13 @@ class AIAnalyzer:
                 "outlook 要指出接下來值得追蹤的官方來源或技術方向。",
             ],
         }
-        return self._run_analysis(
+        report = self._run_analysis(
             prompt=prompt,
             fallback=fallback,
             title="AI 技術前沿情報",
             outlook_label="🔮 未來展望",
         )
+        return self._post_process_ai_report(report, news)
 
     def _run_analysis(
         self,
@@ -138,20 +152,26 @@ class AIAnalyzer:
             payload = json.loads(cleaned)
         except json.JSONDecodeError:
             return None
+        if not isinstance(payload, dict):
+            return None
 
         items: list[ReportItem] = []
         for item in payload.get("items", [])[:6]:
-            if not item.get("title") or not item.get("url"):
+            if not isinstance(item, dict):
+                continue
+            title_text = self._safe_text(item.get("title"))
+            url_text = self._safe_text(item.get("url"))
+            if not title_text or not url_text:
                 continue
             items.append(
                 ReportItem(
-                    title=item["title"].strip(),
-                    url=item["url"].strip(),
-                    summary=item.get("summary", "").strip(),
-                    insight=item.get("insight", "").strip(),
-                    source_name=item.get("source_name", "unknown").strip() or "unknown",
-                    source_type=item.get("source_type", "unknown").strip() or "unknown",
-                    published_at=item.get("published_at"),
+                    title=title_text,
+                    url=url_text,
+                    summary=self._safe_text(item.get("summary")),
+                    insight=self._safe_text(item.get("insight")),
+                    source_name=self._safe_text(item.get("source_name"), default="unknown") or "unknown",
+                    source_type=self._safe_text(item.get("source_type"), default="unknown") or "unknown",
+                    published_at=self._safe_text(item.get("published_at")) or None,
                 )
             )
 
@@ -160,9 +180,9 @@ class AIAnalyzer:
 
         return AnalyzedReport(
             title=title,
-            summary=payload.get("summary", "").strip(),
+            summary=self._safe_text(payload.get("summary")),
             items=items,
-            outlook=payload.get("outlook", "").strip(),
+            outlook=self._safe_text(payload.get("outlook")),
             outlook_label=outlook_label,
         )
 
@@ -235,6 +255,113 @@ class AIAnalyzer:
             outlook_label="🔮 未來展望",
             metadata={"mode": "fallback"},
         )
+
+    def _post_process_ai_report(self, report: AnalyzedReport, news: list[IntelligenceItem]) -> AnalyzedReport:
+        if not report.items:
+            return report
+        self._hydrate_ai_item_metadata(report, news)
+        self._enforce_ai_signal_coverage(report, news)
+        return report
+
+    def _hydrate_ai_item_metadata(self, report: AnalyzedReport, news: list[IntelligenceItem]) -> None:
+        by_url: dict[str, IntelligenceItem] = {}
+        by_title_key: dict[str, IntelligenceItem] = {}
+        for item in news:
+            item_url = canonicalize_url(item.url)
+            if item_url:
+                by_url[item_url] = item
+            title_key = self._title_key(item.title)
+            if title_key and title_key not in by_title_key:
+                by_title_key[title_key] = item
+
+        for report_item in report.items:
+            matched = by_url.get(canonicalize_url(report_item.url)) or by_title_key.get(self._title_key(report_item.title))
+            if not matched:
+                continue
+            if not report_item.source_name or report_item.source_name == "unknown":
+                report_item.source_name = matched.source_name
+            if not report_item.source_type or report_item.source_type == "unknown":
+                report_item.source_type = matched.source_type
+            if not report_item.published_at:
+                report_item.published_at = matched.published_at
+
+    def _enforce_ai_signal_coverage(self, report: AnalyzedReport, news: list[IntelligenceItem]) -> None:
+        for source_type in self._REQUIRED_SOURCE_TYPES:
+            if any(item.source_type == source_type for item in report.items):
+                continue
+            candidate = self._find_source_candidate(news, source_type)
+            if candidate:
+                report.items.insert(0, self._report_item_from_news(candidate))
+
+        deduped: list[ReportItem] = []
+        seen_keys: set[str] = set()
+        for item in report.items:
+            key = canonicalize_url(item.url) or self._title_key(item.title)
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(item)
+
+        deduped.sort(
+            key=lambda item: (
+                self._SOURCE_RANK.get(item.source_type, self._SOURCE_RANK["unknown"]),
+                -self._published_ts(item.published_at),
+                item.title.lower(),
+            )
+        )
+        report.items = deduped[:6]
+
+    def _find_source_candidate(self, news: list[IntelligenceItem], source_type: str) -> IntelligenceItem | None:
+        candidates = [item for item in news if item.source_type == source_type]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                self._SOURCE_RANK.get(item.source_type, self._SOURCE_RANK["unknown"]),
+                -self._published_ts(item.published_at),
+                item.title.lower(),
+            )
+        )
+        return candidates[0]
+
+    def _report_item_from_news(self, item: IntelligenceItem) -> ReportItem:
+        return ReportItem(
+            title=item.title,
+            url=item.url,
+            summary=item.desc or "原始來源未提供摘要。",
+            insight=f"此則來自 {item.source_name}，屬於 {item.source_type}，為近期高優先議題。",
+            source_name=item.source_name,
+            source_type=item.source_type,
+            published_at=item.published_at,
+        )
+
+    def _published_ts(self, value: str | None) -> float:
+        parsed = parse_published_at(value)
+        if parsed is None:
+            return float("-inf")
+        return parsed.astimezone(timezone.utc).timestamp()
+
+    def _title_key(self, title: str | None) -> str:
+        return "".join(ch for ch in (title or "").lower() if ch.isalnum())[:120]
+
+    def _safe_text(self, value, *, default: str = "") -> str:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value).strip()
+        if isinstance(value, dict):
+            for key in ("text", "content", "value"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            return json.dumps(value, ensure_ascii=False).strip()
+        if isinstance(value, list):
+            parts = [self._safe_text(part) for part in value]
+            joined = " ".join(part for part in parts if part)
+            return joined.strip()
+        return str(value).strip()
 
     def _get_ai_response(self, prompt: str) -> str | None:
         if self.gemini_client:

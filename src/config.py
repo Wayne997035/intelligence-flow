@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 try:
@@ -12,6 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Default local config source. Can be overridden by ENV_FILE.
 ENV_FILE = os.getenv("ENV_FILE", ".env.local")
 load_dotenv(PROJECT_ROOT / ENV_FILE)
+if ENV_FILE != ".env":
+    # Load `.env` as a fallback for non-secret toggles (does not override existing vars).
+    load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -28,17 +32,29 @@ def _get_list(name: str, default: list[str]) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _get_env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    cleaned = value.strip()
+    if not cleaned:
+        return default
+    if re.fullmatch(r"\{[A-Z0-9_]+\}", cleaned):
+        return default
+    return cleaned
+
+
 class Config:
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    AI_MODEL = os.getenv("AI_MODEL", "gemini-2.5-flash")
+    GEMINI_API_KEY = _get_env("GEMINI_API_KEY")
+    GROQ_API_KEY = _get_env("GROQ_API_KEY")
+    AI_MODEL = _get_env("AI_MODEL", "gemini-2.5-flash")
 
-    NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-    GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+    NEWS_API_KEY = _get_env("NEWS_API_KEY")
+    GITHUB_TOKEN = _get_env("GITHUB_TOKEN")
 
-    DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-    NOTION_TOKEN = os.getenv("NOTION_TOKEN") or os.getenv("NOTION_INTEGRATION_SECRET")
-    NOTION_PAGE_ID = os.getenv("NOTION_PAGE_ID") or os.getenv("NOTION_DATABASE_ID")
+    DISCORD_WEBHOOK_URL = _get_env("DISCORD_WEBHOOK_URL")
+    NOTION_TOKEN = _get_env("NOTION_TOKEN") or _get_env("NOTION_INTEGRATION_SECRET")
+    NOTION_PAGE_ID = _get_env("NOTION_PAGE_ID") or _get_env("NOTION_DATABASE_ID")
 
     DRY_RUN = _get_bool("DRY_RUN", True)
     ENABLE_AI_ANALYSIS = _get_bool("ENABLE_AI_ANALYSIS", False)
@@ -54,8 +70,8 @@ class Config:
     AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
     HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
     HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "12"))
-    STATE_FILE = os.getenv("STATE_FILE", "data/run_state.json")
-    ARTIFACT_FILE = os.getenv("ARTIFACT_FILE", "data/latest_run.json")
+    STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"
+    ARTIFACT_FILE = _get_env("ARTIFACT_FILE", "data/latest_run.json") or "data/latest_run.json"
 
     US_STOCKS = _get_list("US_STOCKS", ["NVDA", "TSLA", "AMD", "GOOG", "AAPL"])
     TW_STOCKS = _get_list("TW_STOCKS", ["0050", "2330", "00692"])

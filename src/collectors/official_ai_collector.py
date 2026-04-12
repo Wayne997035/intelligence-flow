@@ -27,7 +27,7 @@ class OfficialAICollector:
             {
                 "name": "Google Developers Blog",
                 "url": "https://developers.googleblog.com/feeds/posts/default?alt=rss",
-                "keywords": ["gemini", "ai", "model", "agent", "vertex", "developer"],
+                "keywords": ["gemini", "gemma", "ai", "model", "agent", "vertex", "developer"],
             },
         ]
         self.html_sources = [
@@ -150,7 +150,7 @@ class OfficialAICollector:
 
     def _fetch_claude_platform_release_notes(self, limit: int) -> list[dict]:
         url = "https://platform.claude.com/docs/en/release-notes/overview"
-        keywords = ["managed agents", "agent", "api", "model", "sdk", "release", "claude"]
+        keywords = ["managed agents", "advisor", "tool", "agent", "api", "model", "sdk", "release", "claude"]
         try:
             response = requests.get(url, timeout=10, headers={"User-Agent": "Intel-Flow-Bot"})
             response.raise_for_status()
@@ -159,39 +159,84 @@ class OfficialAICollector:
             return []
 
         soup = BeautifulSoup(response.text, "html.parser")
-        results: list[dict] = []
+        results_by_url: dict[str, dict] = {}
+
+        # Primary extraction path: date headings + adjacent bullet lists.
         for heading in soup.find_all(["h2", "h3", "h4"]):
             heading_text = heading.get_text(" ", strip=True)
             published_at = self._normalize_datetime(heading_text)
             if not published_at:
                 continue
 
-            bullet_texts: list[str] = []
+            heading_id = heading.get("id")
+            note_url = f"{url}#{heading_id}" if heading_id else url
+
+            bullet_items: list[tuple[str, str]] = []
             node = heading.find_next_sibling()
             while node and node.name not in {"h2", "h3", "h4"}:
                 if node.name in {"ul", "ol"}:
                     for li in node.find_all("li"):
                         text = li.get_text(" ", strip=True)
-                        if text and self._matches_keywords(text, "", keywords):
-                            bullet_texts.append(text)
+                        if not text or not self._matches_keywords(text, "", keywords):
+                            continue
+                        anchor = li.find("a", href=True)
+                        linked_url = urljoin(url, anchor["href"]) if anchor else note_url
+                        bullet_items.append((text, linked_url))
                 node = node.find_next_sibling()
 
-            if not bullet_texts:
+            if not bullet_items:
                 continue
 
-            summary = " | ".join(bullet_texts[:2])
-            title = f"[Official] Claude Platform {heading_text}: {bullet_texts[0][:96]}"
-            note_url = f"{url}?date={published_at[:10]}"
-            results.append(
-                {
+            for bullet_text, bullet_url in bullet_items:
+                title = f"[Official] Claude Platform {heading_text}: {bullet_text[:96]}"
+                existing = results_by_url.get(bullet_url)
+                candidate = {
                     "title": title,
-                    "url": note_url,
-                    "desc": summary[:220],
+                    "url": bullet_url,
+                    "desc": bullet_text[:220],
                     "source_name": "Claude Platform Release Notes",
                     "source_type": "official_news",
                     "published_at": published_at,
                 }
+                if existing is None or len(candidate["desc"]) > len(existing.get("desc", "")):
+                    results_by_url[bullet_url] = candidate
+
+        # Fallback extraction path: keyword-heavy links in release-notes docs if DOM shape changes.
+        for anchor in soup.find_all("a", href=True):
+            href = (anchor.get("href") or "").strip()
+            text = anchor.get_text(" ", strip=True)
+            if not text or len(text) < 24:
+                continue
+            if not self._matches_keywords(text, "", keywords):
+                continue
+
+            absolute_url = urljoin(url, href)
+            nearby_heading = anchor.find_previous(["h2", "h3", "h4"])
+            heading_text = nearby_heading.get_text(" ", strip=True) if nearby_heading else "Update"
+            published_at = (
+                self._normalize_datetime(heading_text)
+                or self._extract_html_published_at(anchor)
+                or self._normalize_datetime(self._extract_date_from_text(anchor.parent.get_text(" ", strip=True)))
             )
+            if not published_at:
+                continue
+
+            context = anchor.parent.get_text(" ", strip=True)
+            desc = (context or text)[:220]
+            title = f"[Official] Claude Platform {heading_text}: {text[:96]}"
+            existing = results_by_url.get(absolute_url)
+            candidate = {
+                "title": title,
+                "url": absolute_url,
+                "desc": desc,
+                "source_name": "Claude Platform Release Notes",
+                "source_type": "official_news",
+                "published_at": published_at,
+            }
+            if existing is None or len(candidate["desc"]) > len(existing.get("desc", "")):
+                results_by_url[absolute_url] = candidate
+
+        results = list(results_by_url.values())
         results.sort(key=lambda item: item.get("published_at") or "", reverse=True)
         return results[:limit]
 
@@ -210,6 +255,28 @@ class OfficialAICollector:
                 return parsedate_to_datetime(entry["updated"]).astimezone(timezone.utc).isoformat()
             except (TypeError, ValueError):
                 return entry["updated"]
+        if getattr(entry, "published_parsed", None):
+            parsed = entry.published_parsed
+            return datetime(
+                parsed.tm_year,
+                parsed.tm_mon,
+                parsed.tm_mday,
+                parsed.tm_hour,
+                parsed.tm_min,
+                parsed.tm_sec,
+                tzinfo=timezone.utc,
+            ).isoformat()
+        if getattr(entry, "updated_parsed", None):
+            parsed = entry.updated_parsed
+            return datetime(
+                parsed.tm_year,
+                parsed.tm_mon,
+                parsed.tm_mday,
+                parsed.tm_hour,
+                parsed.tm_min,
+                parsed.tm_sec,
+                tzinfo=timezone.utc,
+            ).isoformat()
         return None
 
     def _extract_html_published_at(self, anchor) -> str | None:

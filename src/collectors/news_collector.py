@@ -46,6 +46,8 @@ class NewsCollector:
             "Codex",
             "Anthropic",
             "Google Gemini",
+            "Google Gemma",
+            "Gemma",
             "xAI",
             "Grok",
             "Llama",

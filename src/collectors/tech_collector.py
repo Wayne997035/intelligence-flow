@@ -11,9 +11,11 @@ from src.utils.logger import logger
 class TechCollector:
     def __init__(self):
         self.github_token = Config.GITHUB_TOKEN
+        self.session = requests.Session()
         self.primary_focus = [
             "Claude",
             "Gemini",
+            "Gemma",
             "OpenAI",
             "ChatGPT",
             "Codex",
@@ -63,26 +65,22 @@ class TechCollector:
 
     def fetch_github_trending_ai(self) -> list[dict]:
         logger.info("Fetching GitHub AI trends...")
-        last_week = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+        last_week = since_dt.strftime("%Y-%m-%d")
         queries = [
-            f"topic:llm stars:>200 pushed:>{last_week}",
-            f"topic:generative-ai stars:>120 pushed:>{last_week}",
-            f"topic:ai-agent stars:>50 pushed:>{last_week}",
-            f"topic:rag stars:>50 pushed:>{last_week}",
-            f"agent in:name,description stars:>120 pushed:>{last_week}",
-            f"skill in:name,description stars:>80 pushed:>{last_week}",
+            f"topic:llm stars:>150 pushed:>{last_week}",
+            f"topic:generative-ai stars:>100 pushed:>{last_week}",
+            f"topic:ai-agent stars:>40 pushed:>{last_week}",
+            f"topic:rag stars:>40 pushed:>{last_week}",
+            f"agent in:name,description stars:>80 pushed:>{last_week}",
+            f"skill in:name,description stars:>50 pushed:>{last_week}",
         ]
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Intel-Flow-Bot",
-        }
-        if self.github_token:
-            headers["Authorization"] = f"Bearer {self.github_token}"
+        headers = self._github_headers()
 
         results_by_url: dict[str, dict] = {}
         for query in queries:
             try:
-                response = requests.get(
+                response = self.session.get(
                     "https://api.github.com/search/repositories",
                     headers=headers,
                     params={"q": query, "sort": "stars", "order": "desc", "per_page": 5},
@@ -96,8 +94,9 @@ class TechCollector:
 
             for repo in payload.get("items", []):
                 repo_payload = {
-                    "title": f"[GitHub] {repo['full_name']} ({repo['stargazers_count']} stars)",
+                    "full_name": repo["full_name"],
                     "url": repo["html_url"],
+                    "stars_total": repo.get("stargazers_count", 0),
                     "desc": repo.get("description") or "No description.",
                     "source_name": "GitHub",
                     "source_type": "github_repo",
@@ -108,7 +107,38 @@ class TechCollector:
                     results_by_url[repo_payload["url"]] = repo_payload
 
         results = list(results_by_url.values())
-        results.sort(key=lambda item: item.get("published_at") or "", reverse=True)
+        for repo_payload in results:
+            repo_payload["recent_star_delta"] = self._estimate_recent_star_delta(
+                repo_payload["full_name"],
+                since_dt,
+            )
+            delta = repo_payload["recent_star_delta"]
+            stars_total = repo_payload["stars_total"]
+            if isinstance(delta, int) and delta > 0:
+                repo_payload["title"] = f"[GitHub] {repo_payload['full_name']} (+{delta}★/7d, {stars_total} stars)"
+            else:
+                repo_payload["title"] = f"[GitHub] {repo_payload['full_name']} ({stars_total} stars)"
+
+        def _published_ts(value: str | None) -> float:
+            if not value:
+                return float("-inf")
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+            except ValueError:
+                return float("-inf")
+
+        results.sort(
+            key=lambda item: (
+                item.get("recent_star_delta") if isinstance(item.get("recent_star_delta"), int) else -1,
+                _published_ts(item.get("published_at")),
+                item.get("stars_total", 0),
+            ),
+            reverse=True,
+        )
+        for repo_payload in results:
+            repo_payload.pop("full_name", None)
+            repo_payload.pop("stars_total", None)
+            repo_payload.pop("recent_star_delta", None)
         return results
 
     def fetch_reddit_ai_hot(self) -> list[dict]:
@@ -151,3 +181,59 @@ class TechCollector:
 
     def fetch_all_community_ai(self) -> list[dict]:
         return self.fetch_hacker_news_ai() + self.fetch_github_trending_ai() + self.fetch_reddit_ai_hot()
+
+    def _github_headers(self, *, timeline_preview: bool = False) -> dict[str, str]:
+        accept = "application/vnd.github+json"
+        if timeline_preview:
+            accept = "application/vnd.github.star+json"
+        headers = {
+            "Accept": accept,
+            "User-Agent": "Intel-Flow-Bot",
+        }
+        if self.github_token:
+            headers["Authorization"] = f"Bearer {self.github_token}"
+        return headers
+
+    def _estimate_recent_star_delta(self, full_name: str, since_dt: datetime, max_pages: int = 3) -> int | None:
+        headers = self._github_headers(timeline_preview=True)
+        recent_stars = 0
+
+        for page in range(1, max_pages + 1):
+            try:
+                response = self.session.get(
+                    f"https://api.github.com/repos/{full_name}/stargazers",
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                    timeout=10,
+                )
+                if response.status_code == 403 and "rate limit" in response.text.lower():
+                    logger.warning("GitHub stargazer timeline hit rate limit for %s.", full_name)
+                    return None
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:  # pragma: no cover - live source failures
+                logger.warning("GitHub stargazer timeline fetch failed for %s: %s", full_name, exc)
+                return None
+
+            if not isinstance(payload, list) or not payload:
+                break
+
+            reached_older_stars = False
+            for entry in payload:
+                starred_at = entry.get("starred_at")
+                if not starred_at:
+                    # If preview header stops returning timeline timestamps, fall back to total stars only.
+                    return None
+                try:
+                    starred_at_dt = datetime.fromisoformat(starred_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+                except ValueError:
+                    continue
+                if starred_at_dt >= since_dt:
+                    recent_stars += 1
+                else:
+                    reached_older_stars = True
+
+            if reached_older_stars or len(payload) < 100:
+                break
+
+        return recent_stars

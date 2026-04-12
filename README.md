@@ -54,9 +54,6 @@ touch .env.local
 正式發送（Discord + Notion）：
 
 ```bash
-ENABLE_AI_ANALYSIS=true \
-ENABLE_DISCORD_DELIVERY=true \
-ENABLE_NOTION_DELIVERY=true \
 ./venv/bin/python main.py --once --live-delivery --enable-ai
 ```
 

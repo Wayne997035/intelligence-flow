@@ -72,7 +72,26 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
         selected_urls.add(item.url)
         if len(selected) >= limit:
             break
-    return selected[:limit]
+
+    # Guardrail: keep fresh high-signal source types from being squeezed out by quotas.
+    required_source_types = ("official_news", "model_release", "github_release")
+    for source_type in required_source_types:
+        if any(picked.source_type == source_type for picked in selected):
+            continue
+        candidate = next((item for item in items if item.source_type == source_type), None)
+        if candidate and candidate.url not in selected_urls:
+            selected.insert(0, candidate)
+            selected_urls.add(candidate.url)
+
+    deduped: list = []
+    seen_urls: set[str] = set()
+    for item in selected:
+        if item.url in seen_urls:
+            continue
+        seen_urls.add(item.url)
+        deduped.append(item)
+
+    return deduped[:limit]
 
 
 def load_fixture_bundle(path: Path) -> dict:
@@ -124,6 +143,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     ai_priority = [
         "Claude",
         "Gemini",
+        "Gemma",
         "xAI",
         "Grok",
         "Codex",
@@ -144,7 +164,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
         "Mistral",
         "GitHub",
         "arXiv",
-        "managed agents",
+        "managed",
     ]
 
     stock_news_ranked = deduplicate_and_rank(

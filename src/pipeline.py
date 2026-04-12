@@ -134,6 +134,7 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
         "claude",
         "gpt",
         "gemini",
+        "gemma",
         "deepseek",
         "qwen",
         "llama",
@@ -195,11 +196,21 @@ def deduplicate_and_rank(
             if title_key and len(title_key) >= 24:
                 title_index[title_key] = dedupe_key
 
+    def _published_timestamp(item: IntelligenceItem) -> float:
+        parsed = parse_published_at(item.published_at)
+        if parsed is None:
+            return float("-inf")
+        return parsed.timestamp()
+
     ranked = list(unique_items.values())
-    ranked.sort(key=lambda item: item.title.lower())
-    ranked.sort(key=lambda item: item.published_at or "", reverse=True)
-    ranked.sort(key=lambda item: source_quality_score(item), reverse=True)
-    ranked.sort(key=lambda item: item.priority)
+    ranked.sort(
+        key=lambda item: (
+            item.priority,
+            -source_quality_score(item),
+            -_published_timestamp(item),
+            item.title.lower(),
+        )
+    )
     return ranked[:limit]
 
 
