@@ -11,6 +11,7 @@ class DiscordSender:
     DISCORD_ITEM_LIMIT = 3
     SUMMARY_LIMIT = 90
     INSIGHT_LIMIT = 110
+    OUTLOOK_LIMIT = 1200
 
     def __init__(
         self,
@@ -141,7 +142,8 @@ class DiscordSender:
                 lines.append(f"> 💡 {self._truncate_text(item.insight, self.INSIGHT_LIMIT)}")
 
         if report.outlook:
-            lines.append(f"{report.outlook_label}\n{self._truncate_text(report.outlook, 140)}")
+            # Keep the final conclusion substantially complete; prioritize truncating earlier snippets instead.
+            lines.append(f"{report.outlook_label}\n{self._truncate_text(report.outlook, self.OUTLOOK_LIMIT)}")
         remaining = max(len(report.items) - self.DISCORD_ITEM_LIMIT, 0)
         if remaining:
             lines.append("")
