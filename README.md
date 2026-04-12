@@ -87,9 +87,3 @@ touch .env.local
 
 - `data/latest_run.json`：本輪執行結果（payload + meta）
 - `data/run_state.json`：跨輪去重狀態（啟用時才使用）
-
-## 安全與版控
-
-- 不要提交任何 `.env` 類檔案或金鑰
-- `.gitignore` 已忽略 `.env`, `.env.local`, `.env.*`
-- 若曾提交過機敏資料，請先輪替金鑰再推送遠端
