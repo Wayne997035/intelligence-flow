@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from src.config import Config
 from src.models import AnalyzedReport
@@ -193,7 +193,7 @@ class NotionSender:
             logger.warning("Notion client or database id missing, skipping send.")
             return None
 
-        title = f"{title_prefix} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        title = self._build_title(title_prefix)
         page = self.notion.pages.create(
             parent={"database_id": Config.NOTION_PAGE_ID},
             properties={"Name": {"title": [{"text": {"content": title}}]}},
@@ -201,6 +201,13 @@ class NotionSender:
         )
         logger.info("Detailed report created in Notion.")
         return page["url"]
+
+    def _build_title(self, title_prefix: str, now: datetime | None = None) -> str:
+        tw_tz = timezone(timedelta(hours=8))
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return f"{title_prefix} {current.astimezone(tw_tz).strftime('%Y-%m-%d %H:%M')}"
 
     def _cap_blocks(self, blocks: list[dict], limit: int = 100) -> list[dict]:
         if len(blocks) <= limit:

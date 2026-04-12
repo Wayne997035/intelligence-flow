@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 
 from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
@@ -50,6 +51,14 @@ def build_report() -> AnalyzedReport:
 
 
 class TestDeliverers(unittest.TestCase):
+    def test_notion_title_uses_taiwan_timezone(self):
+        sender = NotionSender(dry_run=True)
+        title = sender._build_title(
+            "[AI 技術]",
+            now=datetime(2026, 4, 12, 16, 5, tzinfo=timezone.utc),
+        )
+        self.assertEqual(title, "[AI 技術] 2026-04-13 00:05")
+
     def test_notion_blocks_structure(self):
         sender = NotionSender(dry_run=True)
         blocks = sender.build_blocks(build_report(), "測試報告", "blue_background")
