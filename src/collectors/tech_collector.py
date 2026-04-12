@@ -7,6 +7,11 @@ import requests
 from src.config import Config
 from src.utils.logger import logger
 
+try:
+    import feedparser
+except ImportError:  # pragma: no cover - optional in minimal env
+    feedparser = None
+
 
 class TechCollector:
     def __init__(self):
@@ -157,7 +162,8 @@ class TechCollector:
                 response.raise_for_status()
                 payload = response.json()
             except Exception as exc:  # pragma: no cover - live source failures
-                logger.error("Reddit fetch failed for %s: %s", subreddit, exc)
+                logger.warning("Reddit JSON fetch failed for %s, falling back to RSS: %s", subreddit, exc)
+                results.extend(self._fetch_reddit_rss(subreddit))
                 continue
 
             for post in payload.get("data", {}).get("children", []):
@@ -181,6 +187,36 @@ class TechCollector:
 
     def fetch_all_community_ai(self) -> list[dict]:
         return self.fetch_hacker_news_ai() + self.fetch_github_trending_ai() + self.fetch_reddit_ai_hot()
+
+    def _fetch_reddit_rss(self, subreddit: str) -> list[dict]:
+        if feedparser is None:
+            return []
+
+        feed_url = f"https://www.reddit.com/r/{subreddit}/top/.rss?t=day"
+        try:
+            feed = feedparser.parse(feed_url)
+        except Exception as exc:  # pragma: no cover - parser edge cases
+            logger.warning("Reddit RSS parse failed for %s: %s", subreddit, exc)
+            return []
+
+        results: list[dict] = []
+        for entry in getattr(feed, "entries", [])[:5]:
+            title = (entry.get("title") or "").strip()
+            link = (entry.get("link") or "").strip()
+            if not title or not link:
+                continue
+            summary = (entry.get("summary") or "").strip()
+            results.append(
+                {
+                    "title": f"[Reddit r/{subreddit}] {title}",
+                    "url": link,
+                    "desc": f"RSS fallback | {summary[:100]}...",
+                    "source_name": f"Reddit/{subreddit}",
+                    "source_type": "community",
+                    "published_at": entry.get("published") or entry.get("updated"),
+                }
+            )
+        return results
 
     def _github_headers(self, *, timeline_preview: bool = False) -> dict[str, str]:
         accept = "application/vnd.github+json"
