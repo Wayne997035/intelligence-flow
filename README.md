@@ -77,12 +77,6 @@ intelligence-flow/
 
 請參考 [`.env.example`](./.env.example)。
 
-本機建議做法：
-
-1. 複製範本：`cp .env.example .env.local`
-2. 只在 `.env.local` 放本機金鑰與 webhook
-3. 不要提交 `.env` / `.env.local` / `.env.*`（repo 已在 `.gitignore` 忽略，僅保留 `.env.example`）
-
 常用欄位：
 
 | Variable | Purpose |
