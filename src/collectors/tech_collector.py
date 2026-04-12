@@ -149,40 +149,14 @@ class TechCollector:
     def fetch_reddit_ai_hot(self) -> list[dict]:
         logger.info("Fetching Reddit AI posts...")
         subreddits = ["ClaudeAI", "OpenAI", "GoogleGemini", "singularity", "LocalLLaMA", "MachineLearning"]
-        headers = {"User-Agent": "Intel-Flow-Bot/1.0"}
         results: list[dict] = []
 
         for subreddit in subreddits:
-            try:
-                response = requests.get(
-                    f"https://www.reddit.com/r/{subreddit}/top.json?t=day&limit=5",
-                    headers=headers,
-                    timeout=10,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except Exception as exc:  # pragma: no cover - live source failures
-                logger.warning("Reddit JSON fetch failed for %s, falling back to RSS: %s", subreddit, exc)
-                results.extend(self._fetch_reddit_rss(subreddit))
+            rss_items = self._fetch_reddit_rss(subreddit)
+            if rss_items:
+                results.extend(rss_items)
                 continue
-
-            for post in payload.get("data", {}).get("children", []):
-                data = post.get("data", {})
-                if data.get("stickied") or not data.get("title"):
-                    continue
-                results.append(
-                    {
-                        "title": f"[Reddit r/{subreddit}] {data['title']}",
-                        "url": f"https://www.reddit.com{data['permalink']}",
-                        "desc": f"Upvotes: {data.get('ups', 0)} | {data.get('selftext', '')[:100]}...",
-                        "source_name": f"Reddit/{subreddit}",
-                        "source_type": "community",
-                        "published_at": datetime.fromtimestamp(
-                            data.get("created_utc", 0),
-                            tz=timezone.utc,
-                        ).isoformat(),
-                    }
-                )
+            logger.warning("Reddit RSS fetch returned no entries for %s.", subreddit)
         return results
 
     def fetch_all_community_ai(self) -> list[dict]:
