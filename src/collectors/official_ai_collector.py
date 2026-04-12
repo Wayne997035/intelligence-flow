@@ -144,9 +144,8 @@ class OfficialAICollector:
                 fallback_feed_url = source.get("fallback_feed_url")
                 if fallback_feed_url:
                     logger.info(
-                        "Official AI page fetch blocked for %s (%s); falling back to %s",
+                        "Official AI source %s is using RSS fallback: %s",
                         source["name"],
-                        exc,
                         fallback_feed_url,
                     )
                     results.extend(
