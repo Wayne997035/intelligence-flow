@@ -131,3 +131,55 @@ class TestAnalyzer(unittest.TestCase):
         self.assertEqual(parsed.items[0].insight, "insight from list")
         self.assertEqual(parsed.items[0].source_name, "ExampleSource")
         self.assertEqual(parsed.items[0].published_at, "2026-04-12T00:00:00Z")
+
+    def test_post_process_ai_report_keeps_latest_official_cluster_items(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Community only",
+                    url="https://example.com/community-only",
+                    summary="s",
+                    insight="i",
+                    source_name="Reddit",
+                    source_type="community",
+                    published_at="2026-04-12T08:00:00Z",
+                )
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+        news = [
+            IntelligenceItem(
+                title="[Official] Latest official update A",
+                url="https://example.com/official/latest#a",
+                desc="official update a",
+                source_name="Claude Platform Release Notes",
+                source_type="official_news",
+                published_at="2026-04-09T00:00:00Z",
+            ),
+            IntelligenceItem(
+                title="[Official] Latest official update B",
+                url="https://example.com/official/latest#b",
+                desc="official update b",
+                source_name="Claude Platform Release Notes",
+                source_type="official_news",
+                published_at="2026-04-08T00:00:00Z",
+            ),
+            IntelligenceItem(
+                title="[Official] Another source update",
+                url="https://example.com/another-official",
+                desc="other official",
+                source_name="Other Official Source",
+                source_type="official_news",
+                published_at="2026-04-07T00:00:00Z",
+            ),
+        ]
+
+        processed = analyzer._post_process_ai_report(report, news)
+        urls = {item.url for item in processed.items}
+
+        self.assertIn("https://example.com/official/latest#a", urls)
+        self.assertIn("https://example.com/official/latest#b", urls)

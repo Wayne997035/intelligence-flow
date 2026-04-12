@@ -286,12 +286,30 @@ class AIAnalyzer:
                 report_item.published_at = matched.published_at
 
     def _enforce_ai_signal_coverage(self, report: AnalyzedReport, news: list[IntelligenceItem]) -> None:
+        must_include: list[IntelligenceItem] = []
+
         for source_type in self._REQUIRED_SOURCE_TYPES:
             if any(item.source_type == source_type for item in report.items):
                 continue
             candidate = self._find_source_candidate(news, source_type)
             if candidate:
-                report.items.insert(0, self._report_item_from_news(candidate))
+                must_include.append(candidate)
+
+        # Preserve at least two newest items from the latest official source cluster.
+        official_candidates = [item for item in news if item.source_type == "official_news"]
+        if official_candidates:
+            official_candidates.sort(key=lambda item: -self._published_ts(item.published_at))
+            latest_source_name = official_candidates[0].source_name
+            latest_cluster = [item for item in official_candidates if item.source_name == latest_source_name]
+            latest_cluster.sort(key=lambda item: -self._published_ts(item.published_at))
+            for candidate in latest_cluster[:2]:
+                if not self._report_has_item(report.items, candidate):
+                    must_include.append(candidate)
+
+        for candidate in reversed(must_include):
+            if self._report_has_item(report.items, candidate):
+                continue
+            report.items.insert(0, self._report_item_from_news(candidate))
 
         deduped: list[ReportItem] = []
         seen_keys: set[str] = set()
@@ -306,7 +324,6 @@ class AIAnalyzer:
             key=lambda item: (
                 self._SOURCE_RANK.get(item.source_type, self._SOURCE_RANK["unknown"]),
                 -self._published_ts(item.published_at),
-                item.title.lower(),
             )
         )
         report.items = deduped[:6]
@@ -319,7 +336,6 @@ class AIAnalyzer:
             key=lambda item: (
                 self._SOURCE_RANK.get(item.source_type, self._SOURCE_RANK["unknown"]),
                 -self._published_ts(item.published_at),
-                item.title.lower(),
             )
         )
         return candidates[0]
@@ -334,6 +350,18 @@ class AIAnalyzer:
             source_type=item.source_type,
             published_at=item.published_at,
         )
+
+    def _report_has_item(self, report_items: list[ReportItem], candidate: IntelligenceItem) -> bool:
+        candidate_url = canonicalize_url(candidate.url)
+        candidate_title = self._title_key(candidate.title)
+        for report_item in report_items:
+            report_url = canonicalize_url(report_item.url)
+            report_title = self._title_key(report_item.title)
+            if candidate_url and report_url and candidate_url == report_url:
+                return True
+            if candidate_title and report_title and candidate_title == report_title:
+                return True
+        return False
 
     def _published_ts(self, value: str | None) -> float:
         parsed = parse_published_at(value)

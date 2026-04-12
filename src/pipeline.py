@@ -38,13 +38,14 @@ def canonicalize_url(url: str | None) -> str:
         if not key.startswith("utm_") and key not in _DROP_QUERY_KEYS
     ]
     path = parts.path.rstrip("/") or "/"
+    fragment = parts.fragment.strip()
     return urlunsplit(
         (
             (parts.scheme or "https").lower(),
             parts.netloc.lower(),
             path,
             urlencode(query_pairs, doseq=True),
-            "",
+            fragment,
         )
     )
 
@@ -171,6 +172,8 @@ def deduplicate_and_rank(
 ) -> list[IntelligenceItem]:
     unique_items: dict[str, IntelligenceItem] = {}
     title_index: dict[str, str] = {}
+    order_index: dict[str, int] = {}
+    order_counter = 0
 
     for item in items:
         normalized = normalize_item(
@@ -193,6 +196,9 @@ def deduplicate_and_rank(
 
         if _should_replace(existing, normalized):
             unique_items[dedupe_key] = normalized
+            if dedupe_key not in order_index:
+                order_index[dedupe_key] = order_counter
+                order_counter += 1
             if title_key and len(title_key) >= 24:
                 title_index[title_key] = dedupe_key
 
@@ -203,12 +209,13 @@ def deduplicate_and_rank(
         return parsed.timestamp()
 
     ranked = list(unique_items.values())
+    reverse_order_index = {id(item): key for key, item in unique_items.items()}
     ranked.sort(
         key=lambda item: (
             item.priority,
             -source_quality_score(item),
             -_published_timestamp(item),
-            item.title.lower(),
+            order_index.get(reverse_order_index.get(id(item), ""), 10**9),
         )
     )
     return ranked[:limit]

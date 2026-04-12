@@ -20,6 +20,13 @@ class TestPipeline(unittest.TestCase):
         url = "https://example.com/post/?utm_source=x&ref=y&id=1"
         self.assertEqual(canonicalize_url(url), "https://example.com/post?id=1")
 
+    def test_canonicalize_url_preserves_fragment_anchor(self):
+        url = "https://example.com/release-notes/?utm_source=x#apr-9-2026"
+        self.assertEqual(
+            canonicalize_url(url),
+            "https://example.com/release-notes#apr-9-2026",
+        )
+
     def test_deduplicate_and_rank_prefers_longer_description(self):
         items = [
             {
@@ -174,6 +181,27 @@ class TestPipeline(unittest.TestCase):
         ]
         ranked = deduplicate_and_rank(items, ["item"], limit=10)
         self.assertEqual(ranked[0].url, "https://example.com/newer-iso")
+
+    def test_deduplicate_and_rank_keeps_same_page_different_anchors(self):
+        items = [
+            {
+                "title": "Claude Platform April 9, 2026: advisor tool",
+                "url": "https://example.com/release-notes#apr-9-2026",
+                "source_type": "official_news",
+                "published_at": "2026-04-09T00:00:00Z",
+            },
+            {
+                "title": "Claude Platform April 8, 2026: managed agents",
+                "url": "https://example.com/release-notes#apr-8-2026",
+                "source_type": "official_news",
+                "published_at": "2026-04-08T00:00:00Z",
+            },
+        ]
+        ranked = deduplicate_and_rank(items, ["claude"], limit=10)
+        urls = {item.url for item in ranked}
+        self.assertEqual(len(ranked), 2)
+        self.assertIn("https://example.com/release-notes#apr-9-2026", urls)
+        self.assertIn("https://example.com/release-notes#apr-8-2026", urls)
 
 
 class _MockResponse:

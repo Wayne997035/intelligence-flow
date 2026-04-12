@@ -16,7 +16,7 @@ from src.collectors.tech_collector import TechCollector
 from src.config import Config
 from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
-from src.pipeline import deduplicate_and_rank, filter_recent_items, is_relevant_ai_item, normalize_item
+from src.pipeline import deduplicate_and_rank, filter_recent_items, is_relevant_ai_item, normalize_item, parse_published_at
 from src.utils.logger import logger
 from src.utils.state_store import RunStateStore, dump_artifact
 
@@ -41,7 +41,7 @@ def trim_descriptions(items: list[dict], max_length: int) -> list[dict]:
 
 def select_ai_report_candidates(items: list, limit: int) -> list:
     quotas = [
-        ("official_news", 3),
+        ("official_news", 4),
         ("github_release", 2),
         ("github_repo", 3),
         ("model_release", 2),
@@ -174,10 +174,15 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
         default_source_name="news",
         default_source_type="news",
     )
-    ai_input_items = [
-        item for item in trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
-        if is_relevant_ai_item(normalize_item(item))
-    ]
+    ai_raw_trimmed = trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
+    ai_input_items: list = []
+    ai_irrelevant_count = 0
+    for item in ai_raw_trimmed:
+        normalized = normalize_item(item)
+        if is_relevant_ai_item(normalized):
+            ai_input_items.append(item)
+        else:
+            ai_irrelevant_count += 1
     ai_news_ranked = deduplicate_and_rank(
         ai_input_items,
         ai_priority,
@@ -196,6 +201,15 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
         max_age_days=Config.AI_NEWS_LOOKBACK_DAYS,
         require_published_at=True,
     )
+    ai_recent_urls = {item.url for item in ai_news_recent}
+    ai_recent_cutoff_dropped = {"undated": 0, "older_than_window": 0}
+    for item in ai_news_ranked:
+        parsed = parse_published_at(item.published_at)
+        if parsed is None:
+            ai_recent_cutoff_dropped["undated"] += 1
+            continue
+        if item.url not in ai_recent_urls:
+            ai_recent_cutoff_dropped["older_than_window"] += 1
 
     stock_news, skipped_stock_duplicates = state_store.filter_new_items("stock_news", stock_news_recent, limit=12)
     ai_news, skipped_ai_duplicates = state_store.filter_new_items("ai_news", ai_news_recent, limit=30)
@@ -205,6 +219,8 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     if not ai_news and ai_news_recent:
         ai_news = ai_news_recent[:30]
     ai_news = select_ai_report_candidates(ai_news, limit=15)
+    ai_selected_urls = {item.url for item in ai_news}
+    ai_recent_not_selected = [item.title for item in ai_news_recent if item.url not in ai_selected_urls][:12]
 
     stock_report = analyzer.analyze_stock_market(inputs.get("us_stocks", []) + inputs.get("tw_stocks", []), stock_news)
     stock_report.metadata["history_duplicates_skipped"] = skipped_stock_duplicates
@@ -237,6 +253,16 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
             "enable_ai": enable_ai,
             "stock_duplicates_skipped": skipped_stock_duplicates,
             "ai_duplicates_skipped": skipped_ai_duplicates,
+            "ai_pipeline": {
+                "raw_count": len(inputs.get("ai_news", [])),
+                "trimmed_count": len(ai_raw_trimmed),
+                "irrelevant_dropped": ai_irrelevant_count,
+                "ranked_count": len(ai_news_ranked),
+                "recent_count": len(ai_news_recent),
+                "recent_cutoff_dropped": ai_recent_cutoff_dropped,
+                "history_or_limit_count": len(ai_news),
+                "recent_not_selected_sample": ai_recent_not_selected,
+            },
         },
     }
     if Config.WRITE_ARTIFACTS:
