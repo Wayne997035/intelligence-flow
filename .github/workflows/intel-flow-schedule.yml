@@ -1,0 +1,50 @@
+name: Intel Flow Schedule
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Asia/Taipei 09:00 (UTC+8)
+    - cron: "0 1 * * *"
+    # Asia/Taipei 21:00 (UTC+8)
+    - cron: "0 13 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-flow-schedule
+  cancel-in-progress: false
+
+jobs:
+  run-intel-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ENABLE_AI_ANALYSIS: "true"
+      ENABLE_DISCORD_DELIVERY: "true"
+      ENABLE_NOTION_DELIVERY: "true"
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN_PAT }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      NOTION_INTEGRATION_SECRET: ${{ secrets.NOTION_INTEGRATION_SECRET }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+      TWITTER_CONSUMER_KEY: ${{ secrets.TWITTER_CONSUMER_KEY }}
+      TWITTER_CONSUMER_SECRET: ${{ secrets.TWITTER_CONSUMER_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run intel flow once
+        run: python main.py --once --live-delivery --enable-ai
