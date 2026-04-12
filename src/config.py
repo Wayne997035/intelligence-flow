@@ -47,7 +47,8 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 class Config:
     GEMINI_API_KEY = _get_env("GEMINI_API_KEY")
     GROQ_API_KEY = _get_env("GROQ_API_KEY")
-    AI_MODEL = _get_env("AI_MODEL", "gemini-2.5-flash")
+    AI_MODEL = _get_env("AI_MODEL", "gemini-flash-latest")
+    GROQ_MODEL = _get_env("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     NEWS_API_KEY = _get_env("NEWS_API_KEY")
     GITHUB_TOKEN = _get_env("GITHUB_TOKEN")

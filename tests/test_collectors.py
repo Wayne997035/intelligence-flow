@@ -239,6 +239,36 @@ class TestOfficialCollector(unittest.TestCase):
         self.assertTrue(any("#apr-9-2026" in url for url in urls))
         self.assertTrue(any("/release-notes/managed-agents" in url for url in urls))
 
+    @patch("src.collectors.official_ai_collector.requests.get")
+    def test_openai_html_fetch_failure_falls_back_to_rss(self, mock_get):
+        def _mock_get(url, *args, **kwargs):
+            if "openai.com" in url:
+                raise RuntimeError("403 Client Error")
+            return _MockResponse(text="<html><body>No matching links</body></html>")
+
+        mock_get.side_effect = _mock_get
+
+        collector = OfficialAICollector()
+        fallback_items = [
+            {
+                "title": "[Official] OpenAI fallback item",
+                "url": "https://openai.com/news/example",
+                "desc": "fallback desc",
+                "source_name": "OpenAI News RSS",
+                "source_type": "official_news",
+                "published_at": "2026-04-12T00:00:00Z",
+            }
+        ]
+        with patch.object(collector, "_fetch_single_feed_source", return_value=fallback_items) as mock_fallback:
+            items = collector._fetch_html_updates(limit_per_source=3)
+
+        self.assertEqual(items, fallback_items)
+        mock_fallback.assert_called_once()
+        self.assertEqual(
+            mock_fallback.call_args.kwargs["url"],
+            "https://openai.com/news/rss.xml",
+        )
+
 
 class TestTechCollector(unittest.TestCase):
     def test_estimate_recent_star_delta_counts_only_recent_stars(self):

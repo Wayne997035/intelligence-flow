@@ -51,6 +51,19 @@ class OfficialAICollector:
                 "url": "https://openai.com/news/product-releases/",
                 "link_prefixes": ["/index/", "/news/"],
                 "keywords": ["gpt", "openai", "model", "codex", "agent", "search", "api"],
+                "fallback_feed_url": "https://openai.com/news/rss.xml",
+                "fallback_feed_source_name": "OpenAI News RSS",
+                "fallback_feed_keywords": [
+                    "openai",
+                    "gpt",
+                    "api",
+                    "model",
+                    "release",
+                    "agent",
+                    "codex",
+                    "chatgpt",
+                    "responses",
+                ],
             },
         ]
 
@@ -68,34 +81,56 @@ class OfficialAICollector:
 
         results: list[dict] = []
         for source in self.feed_sources:
-            try:
-                feed = feedparser.parse(source["url"])
-            except Exception as exc:  # pragma: no cover - feed parser edge cases
-                logger.warning("Official AI feed parse failed for %s: %s", source["name"], exc)
-                continue
-
-            count = 0
-            for entry in getattr(feed, "entries", []):
-                title = (entry.get("title") or "").strip()
-                link = (entry.get("link") or "").strip()
-                summary = (entry.get("summary") or entry.get("description") or "").strip()
-                if not title or not link:
-                    continue
-                if not self._matches_keywords(title, summary, source["keywords"]):
-                    continue
-                results.append(
-                    {
-                        "title": f"[Official] {title}",
-                        "url": link,
-                        "desc": BeautifulSoup(summary[:220], "html.parser").get_text(" ", strip=True),
-                        "source_name": source["name"],
-                        "source_type": "official_news",
-                        "published_at": self._extract_published_at(entry),
-                    }
+            results.extend(
+                self._fetch_single_feed_source(
+                    source_name=source["name"],
+                    url=source["url"],
+                    keywords=source["keywords"],
+                    limit=limit_per_source,
                 )
-                count += 1
-                if count >= limit_per_source:
-                    break
+            )
+        return results
+
+    def _fetch_single_feed_source(
+        self,
+        *,
+        source_name: str,
+        url: str,
+        keywords: list[str],
+        limit: int,
+    ) -> list[dict]:
+        if feedparser is None:
+            return []
+
+        results: list[dict] = []
+        try:
+            feed = feedparser.parse(url)
+        except Exception as exc:  # pragma: no cover - feed parser edge cases
+            logger.warning("Official AI feed parse failed for %s: %s", source_name, exc)
+            return []
+
+        count = 0
+        for entry in getattr(feed, "entries", []):
+            title = (entry.get("title") or "").strip()
+            link = (entry.get("link") or "").strip()
+            summary = (entry.get("summary") or entry.get("description") or "").strip()
+            if not title or not link:
+                continue
+            if not self._matches_keywords(title, summary, keywords):
+                continue
+            results.append(
+                {
+                    "title": f"[Official] {title}",
+                    "url": link,
+                    "desc": BeautifulSoup(summary[:220], "html.parser").get_text(" ", strip=True),
+                    "source_name": source_name,
+                    "source_type": "official_news",
+                    "published_at": self._extract_published_at(entry),
+                }
+            )
+            count += 1
+            if count >= limit:
+                break
         return results
 
     def _fetch_html_updates(self, limit_per_source: int) -> list[dict]:
@@ -106,6 +141,23 @@ class OfficialAICollector:
                 response = requests.get(source["url"], timeout=10, headers={"User-Agent": "Intel-Flow-Bot"})
                 response.raise_for_status()
             except Exception as exc:  # pragma: no cover - live source failures
+                fallback_feed_url = source.get("fallback_feed_url")
+                if fallback_feed_url:
+                    logger.info(
+                        "Official AI page fetch blocked for %s (%s); falling back to %s",
+                        source["name"],
+                        exc,
+                        fallback_feed_url,
+                    )
+                    results.extend(
+                        self._fetch_single_feed_source(
+                            source_name=source.get("fallback_feed_source_name", source["name"]),
+                            url=fallback_feed_url,
+                            keywords=source.get("fallback_feed_keywords", source["keywords"]),
+                            limit=limit_per_source,
+                        )
+                    )
+                    continue
                 logger.warning("Official AI page fetch failed for %s: %s", source["name"], exc)
                 continue
 

@@ -410,7 +410,7 @@ class AIAnalyzer:
             try:
                 response = self.groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": prompt}],
-                    model="llama-3.3-70b-versatile",
+                    model=Config.GROQ_MODEL,
                 )
                 return response.choices[0].message.content
             except Exception as exc:  # pragma: no cover - live provider failure
