@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import requests
 
 from src.config import Config
@@ -38,6 +40,9 @@ class GitHubReleaseCollector:
                 continue
 
             for release in payload[:per_repo_limit]:
+                if self._is_low_signal_patch_release(release):
+                    continue
+                excerpt = self._normalize_release_excerpt(release.get("body") or "")
                 results.append(
                     {
                         "title": f"[GitHub Release] {repo} {release.get('name') or release.get('tag_name')}",
@@ -45,7 +50,7 @@ class GitHubReleaseCollector:
                         "desc": (
                             f"Tag: {release.get('tag_name', 'N/A')} | "
                             f"Published: {release.get('published_at', 'N/A')} | "
-                            f"{(release.get('body') or '').strip()[:180]}..."
+                            f"{excerpt[:180]}..."
                         ),
                         "source_name": "GitHub Releases",
                         "source_type": "github_release",
@@ -54,3 +59,40 @@ class GitHubReleaseCollector:
                     }
                 )
         return results
+
+    def _normalize_release_excerpt(self, body: str) -> str:
+        if not body:
+            return "Release details are available on the source page."
+        text = body
+        text = re.sub(r"```[\s\S]*?```", " ", text)
+        text = text.replace("`", "")
+        text = re.sub(r"[*>#-]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return "Release details are available on the source page."
+        return text
+
+    def _is_low_signal_patch_release(self, release: dict) -> bool:
+        name = (release.get("name") or "").lower()
+        tag = (release.get("tag_name") or "").lower()
+        body = (release.get("body") or "").lower()
+        text = f"{name} {tag} {body}"
+
+        semantic_patch = bool(re.fullmatch(r"v?\d+\.\d+\.\d+", tag))
+        patch_markers = ["patch release", "hotfix", "bugfix", "minor fixes", "small patch"]
+        high_signal_markers = [
+            "breaking",
+            "security",
+            "agent",
+            "model",
+            "release notes",
+            "api",
+            "claude",
+            "gpt",
+            "gemini",
+            "gemma",
+            "managed",
+        ]
+        has_patch_marker = any(marker in text for marker in patch_markers)
+        has_high_signal = any(marker in text for marker in high_signal_markers)
+        return semantic_patch and has_patch_marker and not has_high_signal

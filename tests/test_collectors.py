@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+from src.collectors.github_release_collector import GitHubReleaseCollector
 from src.collectors.official_ai_collector import OfficialAICollector
 from src.collectors.tech_collector import TechCollector
 from src.pipeline import (
@@ -230,3 +231,32 @@ class TestTechCollector(unittest.TestCase):
             delta = collector._estimate_recent_star_delta("owner/repo", since_dt, max_pages=2)
 
         self.assertEqual(delta, 2)
+
+
+class TestGitHubReleaseCollector(unittest.TestCase):
+    def test_normalize_release_excerpt_strips_markdown_noise(self):
+        collector = GitHubReleaseCollector()
+        excerpt = collector._normalize_release_excerpt(
+            "```python\nx=1\n```\n- Small patch to fix `device_map` parsing."
+        )
+        self.assertNotIn("```", excerpt)
+        self.assertNotIn("`", excerpt)
+        self.assertIn("device_map", excerpt)
+
+    def test_low_signal_patch_release_is_filtered(self):
+        collector = GitHubReleaseCollector()
+        release = {
+            "name": "Patch release: v5.5.3",
+            "tag_name": "v5.5.3",
+            "body": "Small patch release to fix parser bug.",
+        }
+        self.assertTrue(collector._is_low_signal_patch_release(release))
+
+    def test_high_signal_release_is_not_filtered(self):
+        collector = GitHubReleaseCollector()
+        release = {
+            "name": "Release v2.0.0",
+            "tag_name": "v2.0.0",
+            "body": "Adds new managed agent API and model routing support.",
+        }
+        self.assertFalse(collector._is_low_signal_patch_release(release))
