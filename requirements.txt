@@ -1,10 +1,10 @@
 yfinance
 requests
-tweepy
 python-dotenv
-openai
 notion-client
 apscheduler
 beautifulsoup4
 google-genai
 urllib3
+groq
+feedparser

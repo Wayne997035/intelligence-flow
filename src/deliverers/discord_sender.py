@@ -1,117 +1,181 @@
+from __future__ import annotations
+
 import requests
-import re
+
 from src.config import Config
+from src.models import AnalyzedReport
 from src.utils.logger import logger
 
+
 class DiscordSender:
-    def send_stock_and_analysis(self, us_stocks, tw_stocks, analysis_text, notion_url):
-        """發送報價 + 股票分析 (第一篇)"""
-        if not Config.DISCORD_WEBHOOK_URL: return
-        
-        us_lines = "\n\n".join([f"**{s['symbol']}**\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in us_stocks])
-        tw_lines = "\n\n".join([f"**{s['symbol']}**\n現:{s['price']} | 變:{s['change']}\n區:{s['range']}" for s in tw_stocks])
+    DISCORD_ITEM_LIMIT = 3
+    SUMMARY_LIMIT = 90
+    INSIGHT_LIMIT = 110
 
-        clean_text_dict = self._format_text_with_links_dict(analysis_text)
-        
-        description = f"🇺🇸 **美股**\n{us_lines}\n\n----------------\n"
-        description += f"🇹🇼 **台股**\n{tw_lines}\n\n"
-        description += f"----------------\n"
-        
-        if clean_text_dict['summary']:
-            description += f"📌 **摘要**\n{clean_text_dict['summary']}\n\n"
-            
-        description += clean_text_dict['items_text']
-        
-        if clean_text_dict['outlook']:
-            description += f"\n{clean_text_dict['outlook_label']}\n{clean_text_dict['outlook']}\n"
+    def __init__(
+        self,
+        *,
+        dry_run: bool | None = None,
+        enabled: bool | None = None,
+        session: requests.Session | None = None,
+    ):
+        self.dry_run = Config.DRY_RUN if dry_run is None else dry_run
+        self.enabled = Config.ENABLE_DISCORD_DELIVERY if enabled is None else enabled
+        self.session = session or requests.Session()
 
+    def send_stock_and_analysis(
+        self,
+        us_stocks: list[dict],
+        tw_stocks: list[dict],
+        report: AnalyzedReport,
+        notion_url: str | None,
+    ) -> dict:
+        payload = self._build_stock_payload(us_stocks, tw_stocks, report, notion_url)
+        self._deliver(payload)
+        return payload
+
+    def send_ai_tech_report(
+        self,
+        report: AnalyzedReport,
+        notion_url: str | None,
+    ) -> dict:
+        payload = self._build_ai_payload(report, notion_url)
+        self._deliver(payload)
+        return payload
+
+    def _build_stock_payload(
+        self,
+        us_stocks: list[dict],
+        tw_stocks: list[dict],
+        report: AnalyzedReport,
+        notion_url: str | None,
+    ) -> dict:
+        sections = [
+            "🇺🇸 **美股**",
+            self._render_quotes(us_stocks),
+            "----------------",
+            "🇹🇼 **台股**",
+            self._render_quotes(tw_stocks),
+            "----------------",
+            self._render_report(report),
+        ]
         if notion_url:
-            description += f"\n📒 [**在 Notion 查看完整深度分析報告**]({notion_url})"
+            sections.append(f"📒 [**在 Notion 查看完整深度分析報告**]({notion_url})")
+        return self._build_payload("投資情報報告", "\n".join(part for part in sections if part))
 
-        try:
-            payload = {
-                "embeds": [{
-                    "title": "投資情報報告",
-                    "description": description[:4096],
-                    "color": 0x2ecc71
-                }]
-            }
-            requests.post(Config.DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-            logger.info("Sent Stock Report to Discord.")
-        except Exception as e:
-            logger.error(f"Stock Report send failed: {e}")
-
-    def send_ai_tech_report(self, ai_text, notion_url):
-        """發送 AI 技術前沿情報 (第二篇)"""
-        if not Config.DISCORD_WEBHOOK_URL or ai_text.startswith("ERROR"): return
-        
-        clean_text_dict = self._format_text_with_links_dict(ai_text)
-        
-        description = ""
-        if clean_text_dict['summary']:
-            description += f"📌 **摘要**\n{clean_text_dict['summary']}\n\n"
-            
-        description += clean_text_dict['items_text']
-        
-        if clean_text_dict['outlook']:
-            description += f"\n{clean_text_dict['outlook_label']}\n{clean_text_dict['outlook']}\n"
-
+    def _build_ai_payload(self, report: AnalyzedReport, notion_url: str | None) -> dict:
+        sections = [self._render_report(report)]
         if notion_url:
-            description += f"\n📒 [**在 Notion 查看完整 AI 技術情報**]({notion_url})"
+            sections.append(f"📒 [**在 Notion 查看完整 AI 技術情報**]({notion_url})")
+        return self._build_payload("AI 技術前沿情報", "\n".join(part for part in sections if part))
 
-        try:
-            payload = {
-                "embeds": [{
-                    "title": "AI 技術前沿情報",
-                    "description": description[:4096],
-                    "color": 0x3498db
-                }]
-            }
-            requests.post(Config.DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-            logger.info("Sent AI Tech Report to Discord.")
-        except Exception as e:
-            logger.error(f"AI Tech Report send failed: {e}")
+    def _render_quotes(self, quotes: list[dict]) -> str:
+        if not quotes:
+            return "本輪未取得資料"
+        return "\n\n".join(
+            f"**{quote['symbol']}**\n現:{self._format_quote_value(quote, 'price')} | 變:{self._format_quote_change(quote)}\n區:{self._format_quote_range(quote)}"
+            for quote in quotes
+        )
 
-    def _format_text_with_links_dict(self, text):
-        """解析全文並回傳包含各區塊的字典，以便靈活排版"""
-        import re
-        text = re.sub(r'^-+$', '', text, flags=re.MULTILINE)
-        
-        summary_match = re.search(r'\[SECTION_SUMMARY\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
-        outlook_match = re.search(r'\[(?:FUTURE_OUTLOOK|EXPERT_VIEW)\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
-        
-        summary = ""
-        if summary_match:
-            summary = re.sub(r'TITLE:|URL:|SUMMARY:|INSIGHT:', '', summary_match.group(1).strip()).strip()
+    def _format_quote_value(self, quote: dict, key: str) -> str:
+        value = quote.get(key)
+        if value is None:
+            return "-"
+        numeric = float(value)
+        if self._is_tw_quote(quote):
+            return self._format_tw_number(numeric)
+        return f"{numeric:.2f}"
 
-        item_blocks = re.findall(r'\[(?:NEWS_ITEM|TECH_ITEM)\]\s*(.*?)(?=\s*\[|$)', text, re.DOTALL)
-        items_lines = []
-        outlook = outlook_match.group(1).strip() if outlook_match else ""
+    def _format_quote_change(self, quote: dict) -> str:
+        change = quote.get("change", 0)
+        if isinstance(change, str):
+            try:
+                change_value = float(change)
+            except ValueError:
+                return change
+        else:
+            change_value = float(change)
+        if self._is_tw_quote(quote):
+            return self._format_tw_signed_number(change_value)
+        return f"{change_value:+.2f}"
 
-        def extract_field(pattern, block_text):
-            # 尋找該欄位，直到遇到下一個欄位標籤或 block 結束
-            match = re.search(pattern + r':\s*(.*?)(?=\s*(?:TITLE|URL|SUMMARY|INSIGHT|\[|$))', block_text, re.DOTALL | re.IGNORECASE)
-            return match.group(1).strip() if match else ""
+    def _format_quote_range(self, quote: dict) -> str:
+        range_value = quote.get("range")
+        if not range_value:
+            return "-"
+        if isinstance(range_value, str) and "-" in range_value:
+            low_raw, high_raw = range_value.split("-", 1)
+            low = float(low_raw)
+            high = float(high_raw)
+            if self._is_tw_quote(quote):
+                return f"{self._format_tw_number(low)}-{self._format_tw_number(high)}"
+            return f"{low:.2f}-{high:.2f}"
+        return str(range_value)
 
-        if item_blocks:
-            display_items = item_blocks[:5] # 只在 Discord 顯示 5 則
-            for block in display_items:
-                t_str = extract_field('TITLE', block)
-                u_str = extract_field('URL', block)
-                s_str = extract_field('SUMMARY', block)
-                i_str = extract_field('INSIGHT', block)
-                
-                if t_str and u_str:
-                    items_lines.append("----------------")
-                    items_lines.append(f"**[{t_str}]({u_str})**")
-                    if s_str: items_lines.append(f"• {s_str}")
-                    if i_str: items_lines.append(f"> 💡 {i_str}")
+    def _is_tw_quote(self, quote: dict) -> bool:
+        symbol = str(quote.get("symbol", ""))
+        return symbol.isdigit()
 
-        label = "🔮 **未來展望**" if "[FUTURE_OUTLOOK]" in text else "🕵️ **專家總結**"
-        
+    def _format_tw_number(self, value: float) -> str:
+        rendered = f"{value:.2f}"
+        if rendered.endswith(".00"):
+            return rendered[:-3]
+        return rendered
+
+    def _format_tw_signed_number(self, value: float) -> str:
+        sign = "+" if value >= 0 else "-"
+        rendered = self._format_tw_number(abs(value))
+        return f"{sign}{rendered}"
+
+    def _render_report(self, report: AnalyzedReport) -> str:
+        lines: list[str] = []
+        if report.summary:
+            lines.append(f"📌 **摘要**\n{self._truncate_text(report.summary, 220)}")
+
+        for item in report.items[: self.DISCORD_ITEM_LIMIT]:
+            lines.append("----------------")
+            lines.append(f"**[{item.title}]({item.url})**")
+            if item.summary:
+                lines.append(f"• {self._truncate_text(item.summary, self.SUMMARY_LIMIT)}")
+            if item.insight:
+                lines.append(f"> 💡 {self._truncate_text(item.insight, self.INSIGHT_LIMIT)}")
+
+        if report.outlook:
+            lines.append(f"{report.outlook_label}\n{self._truncate_text(report.outlook, 140)}")
+        remaining = max(len(report.items) - self.DISCORD_ITEM_LIMIT, 0)
+        if remaining:
+            lines.append("")
+            lines.append(f"📎 其餘 {remaining} 則延伸內容與來源細節請看 Notion。")
+        return "\n".join(lines).strip()
+
+    def _build_payload(self, title: str, description: str) -> dict:
         return {
-            "summary": summary,
-            "items_text": "\n".join(items_lines).strip(),
-            "outlook": outlook,
-            "outlook_label": label
+            "embeds": [
+                {
+                    "title": title,
+                    "description": description[:4096],
+                    "color": 0x3498DB if "AI" in title else 0x2ECC71,
+                }
+            ]
         }
+
+    def _truncate_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3].rstrip() + "..."
+
+    def _deliver(self, payload: dict) -> None:
+        if self.dry_run or not self.enabled:
+            logger.info("Discord delivery skipped (dry_run=%s, enabled=%s).", self.dry_run, self.enabled)
+            return
+        if not Config.DISCORD_WEBHOOK_URL:
+            logger.warning("Discord webhook missing, skipping send.")
+            return
+
+        response = self.session.post(
+            Config.DISCORD_WEBHOOK_URL,
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+        logger.info("Sent report to Discord.")

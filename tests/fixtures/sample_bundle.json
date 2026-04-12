@@ -1,0 +1,71 @@
+{
+  "us_stocks": [
+    {
+      "symbol": "NVDA",
+      "price": 915.2,
+      "change": "+12.4",
+      "range": "901.0-920.5",
+      "source": "fixture"
+    },
+    {
+      "symbol": "AMD",
+      "price": 184.6,
+      "change": "+1.1",
+      "range": "180.1-185.0",
+      "source": "fixture"
+    }
+  ],
+  "tw_stocks": [
+    {
+      "symbol": "2330",
+      "price": 872.0,
+      "change": "+8.0",
+      "range": "861.0-874.0",
+      "source": "fixture"
+    }
+  ],
+  "stock_news": [
+    {
+      "title": "NVIDIA expands AI server roadmap",
+      "url": "https://example.com/stocks/nvidia-roadmap?utm_source=test",
+      "desc": "Blackwell server demand remains strong across hyperscalers.",
+      "source_name": "Reuters",
+      "source_type": "news",
+      "published_at": "2026-04-11T08:00:00Z"
+    },
+    {
+      "title": "TSMC raises advanced packaging output",
+      "url": "https://example.com/stocks/tsmc-capacity",
+      "desc": "The supply chain expects tighter capacity for AI accelerators.",
+      "source_name": "Bloomberg",
+      "source_type": "news",
+      "published_at": "2026-04-11T10:00:00Z"
+    }
+  ],
+  "ai_news": [
+    {
+      "title": "OpenAI posts new model release notes",
+      "url": "https://example.com/ai/openai-release",
+      "desc": "Release notes highlight reasoning gains and tool use updates.",
+      "source_name": "OpenAI",
+      "source_type": "official_news",
+      "published_at": "2026-04-11T12:00:00Z"
+    },
+    {
+      "title": "GitHub repository for agent evaluation benchmark trends",
+      "url": "https://example.com/ai/github-agent-benchmark",
+      "desc": "Repository stars accelerate after a new benchmark and agent workflow demos.",
+      "source_name": "GitHub",
+      "source_type": "github_repo",
+      "published_at": "2026-04-11T15:00:00Z"
+    },
+    {
+      "title": "arXiv paper studies multimodal agent planning",
+      "url": "https://example.com/ai/arxiv-agent-paper",
+      "desc": "A recent paper proposes stronger planning and tool routing for multimodal agents.",
+      "source_name": "arXiv",
+      "source_type": "research",
+      "published_at": "2026-04-10T09:30:00Z"
+    }
+  ]
+}

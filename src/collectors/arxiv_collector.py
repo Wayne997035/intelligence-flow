@@ -1,43 +1,62 @@
-import requests
+from __future__ import annotations
+
 import xml.etree.ElementTree as ET
+
+import requests
+
 from src.utils.logger import logger
+
 
 class ArxivCollector:
     def __init__(self):
-        self.base_url = "http://export.arxiv.org/api/query"
+        self.base_url = "https://export.arxiv.org/api/query"
 
-    def fetch_latest_ai_papers(self, limit=20):
-        """抓取 arXiv 最新 AI 相關論文 (類別 + 關鍵字)"""
-        logger.info(f"Fetching top {limit} targeted AI papers from arXiv...")
-        # 結合類別篩選與核心關鍵字 (Agent, Optimization, Edge AI)
-        query = '(cat:cs.AI OR cat:cs.LG OR cat:cs.CL) AND (all:"AI Agent" OR all:"Foundation Model" OR all:"Edge AI")'
-        url = f"{self.base_url}?search_query={query}&sortBy=submittedDate&sortOrder=descending&max_results={limit}"
-        
-        results = []
+    def fetch_latest_ai_papers(self, limit: int = 20) -> list[dict]:
+        logger.info("Fetching top %s targeted AI papers from arXiv...", limit)
+        query = (
+            "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:cs.CV) AND "
+            '(all:"agent" OR all:"reasoning" OR all:"foundation model" OR all:"multimodal")'
+        )
+        url = (
+            f"{self.base_url}?search_query={query}"
+            f"&sortBy=submittedDate&sortOrder=descending&max_results={limit}"
+        )
         try:
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-            
-            root = ET.fromstring(resp.text)
-            # arXiv API uses Atom format
-            ns = {'atom': 'http://www.w3.org/2005/Atom'}
-            
-            for entry in root.findall('atom:entry', ns):
-                title = entry.find('atom:title', ns).text.strip().replace('\n', ' ')
-                summary = entry.find('atom:summary', ns).text.strip().replace('\n', ' ')
-                link = entry.find('atom:id', ns).text
-                published = entry.find('atom:published', ns).text
-                
-                results.append({
-                    'title': f"[arXiv] {title}",
-                    'url': link,
-                    'desc': f"Authors: {', '.join([a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)][:3])} | Published: {published[:10]} | Abstract: {summary[:250]}..."
-                })
-        except Exception as e:
-            logger.error(f"arXiv fetch failed: {e}")
-            
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+        except Exception as exc:  # pragma: no cover - live source failures
+            logger.error("arXiv fetch failed: %s", exc)
+            return []
+
+        root = ET.fromstring(response.text)
+        namespace = {"atom": "http://www.w3.org/2005/Atom"}
+        results: list[dict] = []
+        for entry in root.findall("atom:entry", namespace):
+            title_node = entry.find("atom:title", namespace)
+            summary_node = entry.find("atom:summary", namespace)
+            link_node = entry.find("atom:id", namespace)
+            published_node = entry.find("atom:published", namespace)
+            if None in {title_node, summary_node, link_node, published_node}:
+                continue
+            authors = ", ".join(
+                author.find("atom:name", namespace).text
+                for author in entry.findall("atom:author", namespace)[:3]
+                if author.find("atom:name", namespace) is not None
+            )
+            results.append(
+                {
+                    "title": f"[arXiv] {title_node.text.strip().replace('\n', ' ')}",
+                    "url": link_node.text,
+                    "desc": (
+                        f"Authors: {authors or 'N/A'} | Published: {published_node.text[:10]} | "
+                        f"Abstract: {summary_node.text.strip().replace('\n', ' ')[:250]}..."
+                    ),
+                    "source_name": "arXiv",
+                    "source_type": "research",
+                    "published_at": published_node.text,
+                }
+            )
         return results
 
-    def fetch_all_arxiv(self):
-        """整合所有 arXiv 情報"""
+    def fetch_all_arxiv(self) -> list[dict]:
         return self.fetch_latest_ai_papers()

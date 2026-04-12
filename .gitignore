@@ -1,1 +1,13 @@
-venv/\n.env\n__pycache__/\n*.pyc\ndata/*.json
+venv/
+.env
+.env.local
+.env.*
+!.env.example
+GEMINI_API_KEY=*
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/*.json

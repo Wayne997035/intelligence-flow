@@ -1,52 +1,101 @@
 import unittest
+
+from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
+from src.models import AnalyzedReport, ReportItem
 
-class TestNotionBlocks(unittest.TestCase):
-    def setUp(self):
-        # 初始化 NotionSender，但不提供 Token 以免真的發送
-        self.sender = NotionSender()
 
-    def test_parse_blocks_structure(self):
-        """測試解析邏輯生成的 Blocks 結構是否正確"""
-        mock_text = """
-[SECTION_SUMMARY]
-這是市場摘要內容。
+def build_report() -> AnalyzedReport:
+    return AnalyzedReport(
+        title="AI 技術前沿情報",
+        summary="這是摘要",
+        items=[
+            ReportItem(
+                title="測試標題1",
+                url="https://example.com/news1",
+                summary="這是測試摘要1",
+                insight="這是測試洞察1",
+                source_name="Example",
+                source_type="official_news",
+                published_at="2026-04-12T10:00:00Z",
+            ),
+            ReportItem(
+                title="測試標題2",
+                url="https://example.com/news2",
+                summary="這是測試摘要2",
+                insight="這是測試洞察2",
+                source_name="GitHub",
+                source_type="github_release",
+            ),
+            ReportItem(
+                title="測試標題3",
+                url="https://example.com/news3",
+                summary="這是測試摘要3",
+                insight="這是測試洞察3",
+                source_name="Anthropic",
+                source_type="official_news",
+            ),
+            ReportItem(
+                title="測試標題4",
+                url="https://example.com/news4",
+                summary="這是測試摘要4",
+                insight="這是測試洞察4",
+                source_name="arXiv",
+                source_type="research",
+            ),
+        ],
+        outlook="這是未來展望",
+        outlook_label="🔮 未來展望",
+    )
 
-[NEWS_ITEM]
-TITLE: 測試標題
-URL: https://example.com/news
-SUMMARY: 這是測試摘要。
-INSIGHT: 這是測試洞察。
 
-[EXPERT_VIEW]
-這是專家總結。
-"""
-        # 執行解析 (我們測試私有方法 _parse_and_build_blocks)
-        blocks = self.sender._parse_and_build_blocks(mock_text, "測試報告", "blue_background")
-        
-        # 驗證結構
-        # 尋找 Heading 3 (標題)
-        h3_blocks = [b for b in blocks if b['type'] == 'heading_3']
-        self.assertEqual(len(h3_blocks), 1)
-        
-        # 驗證標題是否為純文字 (不應包含 link 屬性)
-        # 目前的代碼中是：{"text": {"content": title, "link": {"url": url}}}
-        # 我們希望改掉它
-        rich_text = h3_blocks[0]['heading_3']['rich_text'][0]
-        title_content = rich_text['text']['content']
-        title_link = rich_text['text'].get('link')
-        
-        print(f"\n[測試] 標題文字: {title_content}")
-        print(f"[測試] 標題連結: {title_link}")
-        
-        # 尋找 Callout 內的連結
-        callout_blocks = [b for b in blocks if b['type'] == 'callout']
-        self.assertEqual(len(callout_blocks), 1)
-        
-        # 驗證 Callout 底部是否有連結
-        callout_rich_text = callout_blocks[0]['callout']['rich_text']
-        has_link_in_callout = any('link' in rt.get('text', {}) for rt in callout_rich_text)
-        print(f"[測試] Callout 內是否有連結: {has_link_in_callout}")
+class TestDeliverers(unittest.TestCase):
+    def test_notion_blocks_structure(self):
+        sender = NotionSender(dry_run=True)
+        blocks = sender.build_blocks(build_report(), "測試報告", "blue_background")
 
-if __name__ == '__main__':
-    unittest.main()
+        heading_blocks = [block for block in blocks if block["type"] == "heading_3"]
+        self.assertEqual(len(heading_blocks), 4)
+        self.assertEqual(
+            heading_blocks[0]["heading_3"]["rich_text"][0]["text"]["content"],
+            "測試標題1",
+        )
+
+        callout_blocks = [block for block in blocks if block["type"] == "callout"]
+        self.assertEqual(len(callout_blocks), 4)
+        link_text = callout_blocks[0]["callout"]["rich_text"][1]["text"]["link"]["url"]
+        self.assertEqual(link_text, "https://example.com/news1")
+        metadata_lines = [
+            block["paragraph"]["rich_text"][0]["text"]["content"]
+            for block in blocks
+            if block["type"] == "paragraph" and "來源:" in block["paragraph"]["rich_text"][0]["text"]["content"]
+        ]
+        self.assertTrue(any("來源: Example" in line for line in metadata_lines))
+
+    def test_discord_payload_builds_without_live_send(self):
+        sender = DiscordSender(dry_run=True)
+        payload = sender.send_ai_tech_report(build_report(), notion_url=None)
+        description = payload["embeds"][0]["description"]
+        self.assertIn("測試標題1", description)
+        self.assertIn("這是未來展望", description)
+        self.assertIn("這是未來展望\n\n📎 其餘 1 則延伸內容與來源細節請看 Notion", description)
+        self.assertIn("其餘 1 則延伸內容與來源細節請看 Notion", description)
+        self.assertNotIn("測試標題4", description)
+
+    def test_discord_stock_payload_formats_us_and_tw_differently(self):
+        sender = DiscordSender(dry_run=True)
+        payload = sender.send_stock_and_analysis(
+            us_stocks=[{"symbol": "NVDA", "price": 188.63, "change": 5.61, "range": "184.3-190.0"}],
+            tw_stocks=[
+                {"symbol": "0050", "price": 80.75, "change": 1.7, "range": "79.9-80.8"},
+                {"symbol": "2330", "price": 2000.0, "change": 60.0, "range": "1970.0-2000.0"},
+            ],
+            report=build_report(),
+            notion_url=None,
+        )
+        description = payload["embeds"][0]["description"]
+        self.assertIn("現:188.63 | 變:+5.61", description)
+        self.assertIn("現:80.75 | 變:+1.70", description)
+        self.assertIn("區:79.90-80.80", description)
+        self.assertIn("現:2000 | 變:+60", description)
+        self.assertIn("區:1970-2000", description)
