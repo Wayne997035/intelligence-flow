@@ -3,10 +3,12 @@ name: Intel Flow Schedule
 on:
   workflow_dispatch:
   schedule:
-    # Asia/Taipei 09:00 on weekdays (Mon-Fri, UTC+8)
-    - cron: "0 1 * * 1-5"
-    # Asia/Taipei 21:00 on weekdays (Mon-Fri, UTC+8)
-    - cron: "0 13 * * 1-5"
+    # Asia/Taipei 12:00 on weekdays (Mon-Fri)
+    - cron: "0 12 * * 1-5"
+      timezone: "Asia/Taipei"
+    # Asia/Taipei 21:00 on weekdays (Mon-Fri)
+    - cron: "0 21 * * 1-5"
+      timezone: "Asia/Taipei"
 
 permissions:
   contents: read
