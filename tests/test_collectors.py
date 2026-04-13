@@ -111,6 +111,80 @@ class TestPipeline(unittest.TestCase):
                 )
             )
         )
+        self.assertFalse(
+            is_relevant_ai_item(
+                normalize_item(
+                    {
+                        "title": "Our response to the developer tool compromise",
+                        "url": "https://example.com/incident",
+                        "desc": "Security incident response and remediation details",
+                        "source_type": "news",
+                    }
+                )
+            )
+        )
+
+    def test_is_relevant_ai_item_accepts_recent_feature_signal_from_community(self):
+        self.assertTrue(
+            is_relevant_ai_item(
+                normalize_item(
+                    {
+                        "title": "Has any one got FluxBridge to work?",
+                        "url": "https://example.com/community-signal",
+                        "desc": "People are sharing first impressions after rollout.",
+                        "source_type": "community",
+                        "metadata": {"recent_feature_signal": True},
+                    }
+                )
+            )
+        )
+
+    def test_deduplicate_and_rank_filters_low_signal_openai_academy_content(self):
+        items = [
+            {
+                "title": "[Official] ChatGPT for marketing teams",
+                "url": "https://openai.com/academy/marketing",
+                "desc": "Learn how marketing teams use ChatGPT to plan campaigns.",
+                "source_name": "OpenAI News RSS",
+                "source_type": "official_news",
+                "published_at": "2026-04-10T00:00:00Z",
+            },
+            {
+                "title": "[Official] OpenAI Responses API tool update",
+                "url": "https://platform.openai.com/docs/changelog#responses",
+                "desc": "Responses API adds a new tool.",
+                "source_name": "OpenAI API Changelog",
+                "source_type": "official_news",
+                "published_at": "2026-04-10T01:00:00Z",
+            },
+        ]
+
+        ranked = deduplicate_and_rank(items, ["OpenAI", "Responses"], limit=10)
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0].url, "https://platform.openai.com/docs/changelog#responses")
+
+    def test_deduplicate_and_rank_collapses_same_gemma_family_hf_models(self):
+        items = [
+            {
+                "title": "[HF Model] google/gemma-4-E2B-it (100 likes)",
+                "url": "https://huggingface.co/google/gemma-4-E2B-it",
+                "desc": "Downloads: 1 | Task: any-to-any",
+                "source_name": "Hugging Face",
+                "source_type": "model_release",
+                "published_at": "2026-04-10T16:35:43.000Z",
+            },
+            {
+                "title": "[HF Model] alt/gemma-4-E2B-it-fast (50 likes)",
+                "url": "https://huggingface.co/alt/gemma-4-E2B-it-fast",
+                "desc": "Downloads: 2 | Task: any-to-any",
+                "source_name": "Hugging Face",
+                "source_type": "model_release",
+                "published_at": "2026-04-10T16:35:40.000Z",
+            },
+        ]
+
+        ranked = deduplicate_and_rank(items, ["Gemma"], limit=10)
+        self.assertEqual(len(ranked), 1)
 
     def test_filter_recent_items_excludes_old_or_undated_items(self):
         items = [
@@ -203,6 +277,27 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("https://example.com/release-notes#apr-9-2026", urls)
         self.assertIn("https://example.com/release-notes#apr-8-2026", urls)
 
+    def test_deduplicate_and_rank_prefers_core_provider_items_over_generic_items(self):
+        items = [
+            {
+                "title": "MiniMax releases a new checkpoint",
+                "url": "https://example.com/minimax",
+                "source_name": "Hugging Face",
+                "source_type": "model_release",
+                "published_at": "2026-04-10T10:00:00Z",
+            },
+            {
+                "title": "OpenAI ships a new Codex update",
+                "url": "https://example.com/codex",
+                "source_name": "OpenAI",
+                "source_type": "model_release",
+                "published_at": "2026-04-10T09:00:00Z",
+            },
+        ]
+
+        ranked = deduplicate_and_rank(items, ["OpenAI", "Codex"], limit=10)
+        self.assertEqual(ranked[0].url, "https://example.com/codex")
+
 
 class _MockResponse:
     def __init__(self, json_data=None, text="", status_code=200):
@@ -219,6 +314,21 @@ class _MockResponse:
 
 
 class TestOfficialCollector(unittest.TestCase):
+    @patch("src.collectors.official_ai_collector.curl_requests.get")
+    @patch("src.collectors.official_ai_collector.requests.get")
+    def test_fetch_page_text_retries_with_curl_cffi_after_403(self, mock_get, mock_curl_get):
+        mock_get.return_value = _MockResponse(text="blocked", status_code=403)
+        mock_curl_get.return_value = _MockResponse(text="<html>ok</html>", status_code=200)
+
+        collector = OfficialAICollector()
+        html = collector._fetch_page_text(
+            "https://platform.openai.com/docs/changelog",
+            source_name="OpenAI API Changelog",
+        )
+
+        self.assertEqual(html, "<html>ok</html>")
+        mock_curl_get.assert_called_once()
+
     @patch("src.collectors.official_ai_collector.requests.get")
     def test_claude_release_notes_uses_heading_anchor_and_link_fallback(self, mock_get):
         html = """
@@ -247,8 +357,184 @@ class TestOfficialCollector(unittest.TestCase):
         called_urls = [call.kwargs["url"] for call in mock_feed.call_args_list]
         self.assertIn("https://openai.com/news/rss.xml", called_urls)
 
+    def test_extract_docs_release_notes_parses_dated_sections(self):
+        html = """
+        <html><body>
+          <h2 id="apr-11-2026">April 11, 2026</h2>
+          <ul>
+            <li><a href="/docs/en/ultraplan">Ultraplan is now available in research preview</a></li>
+            <li>Minor docs cleanup</li>
+          </ul>
+        </body></html>
+        """
+        collector = OfficialAICollector()
+        items = collector._extract_docs_release_notes(
+            source_name="Claude Code Changelog",
+            source_url="https://code.claude.com/docs/en/changelog",
+            html=html,
+            keywords=["ultraplan", "claude code"],
+            limit=5,
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertIn("Ultraplan", items[0]["title"])
+        self.assertEqual(items[0]["url"], "https://code.claude.com/docs/en/ultraplan")
+
+    def test_extract_docs_release_notes_handles_version_heading_with_following_date(self):
+        html = """
+        <html><body>
+          <h2 id="v2192">2.1.92</h2>
+          <p>April 7, 2026</p>
+          <ul>
+            <li>/ultraplan and other remote-session features now auto-create a default cloud environment</li>
+          </ul>
+        </body></html>
+        """
+        collector = OfficialAICollector()
+        items = collector._extract_docs_release_notes(
+            source_name="Claude Code Changelog",
+            source_url="https://code.claude.com/docs/en/changelog",
+            html=html,
+            keywords=["ultraplan", "claude code"],
+            limit=5,
+            link_hints={"ultraplan": "https://code.claude.com/docs/en/ultraplan"},
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["url"], "https://code.claude.com/docs/en/ultraplan")
+        self.assertEqual(items[0]["published_at"], "2026-04-07T00:00:00+00:00")
+
+    def test_extract_docs_release_notes_handles_openai_changelog_cards(self):
+        html = """
+        <html><body>
+          <div class="mt-5">
+            <div class="grid grid-cols-[3rem_1fr] items-start gap-x-4 gap-y-2">
+              <div><div data-variant="outline">Jan 13</div></div>
+              <div>
+                <div class="flex flex-wrap gap-2 mb-2">
+                  <div data-variant="soft">Feature</div>
+                  <div data-variant="soft">v1/realtime</div>
+                </div>
+                <div class="_MarkdownContent _ChangelogMarkdown">
+                  <p>Added dedicated SIP IP ranges for Realtime API.</p>
+                  <a href="/api/docs/guides/realtime-sip#dedicated-sip-ip-ranges">Learn more</a>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-5">
+            <div class="grid grid-cols-[3rem_1fr] items-start gap-x-4 gap-y-2">
+              <div><div data-variant="outline">Dec 11</div></div>
+              <div>
+                <div class="flex flex-wrap gap-2 mb-2">
+                  <div data-variant="soft">Feature</div>
+                  <div data-variant="soft">v1/responses</div>
+                </div>
+                <div class="_MarkdownContent _ChangelogMarkdown">
+                  <p>Released GPT-5.2 to the Responses API.</p>
+                  <a href="/docs/models/gpt-5.2">Read more</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body></html>
+        """
+        collector = OfficialAICollector()
+        items = collector._extract_docs_release_notes(
+            source_name="OpenAI API Changelog",
+            source_url="https://platform.openai.com/docs/changelog",
+            html=html,
+            keywords=["responses", "realtime", "gpt"],
+            limit=5,
+        )
+
+        self.assertEqual(len(items), 2)
+        self.assertIn("v1/realtime", items[0]["title"])
+        self.assertEqual(
+            items[0]["url"],
+            "https://platform.openai.com/api/docs/guides/realtime-sip#dedicated-sip-ip-ranges",
+        )
+        self.assertTrue(items[0]["published_at"].startswith(f"{datetime.now(timezone.utc).year}-01-13"))
+        self.assertTrue(items[1]["published_at"].startswith(f"{datetime.now(timezone.utc).year - 1}-12-11"))
+
+    @patch("src.collectors.official_ai_collector.requests.get")
+    def test_html_updates_include_google_blog_gemini_app_items(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            text="""
+            <html><body>
+              <div>
+                <a href="/innovation-and-ai/products/gemini-app/notebooks-gemini-notebooklm/">
+                  Try notebooks in Gemini to easily keep track of projects
+                </a>
+                <p>Apr 08, 2026</p>
+              </div>
+            </body></html>
+            """
+        )
+
+        collector = OfficialAICollector()
+        items = collector._fetch_html_updates(limit_per_source=5)
+
+        urls = [item["url"] for item in items]
+        self.assertIn(
+            "https://blog.google/innovation-and-ai/products/gemini-app/notebooks-gemini-notebooklm/",
+            urls,
+        )
+
+    @patch("src.collectors.official_ai_collector.requests.get")
+    def test_html_updates_extract_google_blog_publish_date_from_analytics_attr(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            text="""
+            <html><body>
+              <div>
+                <a
+                  href="/innovation-and-ai/products/gemini-app/notebooks-gemini-notebooklm/"
+                  data-ga4-analytics-lead-click='{"publish_date":"2026-04-08|13:45"}'
+                >
+                  Try notebooks in Gemini to easily keep track of projects
+                </a>
+              </div>
+            </body></html>
+            """
+        )
+
+        collector = OfficialAICollector()
+        items = collector._fetch_html_updates(limit_per_source=5)
+
+        notebook_item = next(
+            item
+            for item in items
+            if item["url"]
+            == "https://blog.google/innovation-and-ai/products/gemini-app/notebooks-gemini-notebooklm/"
+        )
+        self.assertEqual(notebook_item["published_at"], "2026-04-08T00:00:00+00:00")
+
 
 class TestTechCollector(unittest.TestCase):
+    @patch("src.collectors.tech_collector.feedparser.parse")
+    def test_fetch_reddit_keyword_matches_returns_search_hits(self, mock_parse):
+        mock_parse.return_value = type(
+            "Feed",
+            (),
+            {
+                "entries": [
+                    {
+                        "title": "Claude Code v2.1.92 introduces Ultraplan draft",
+                        "link": "https://reddit.example.com/ultraplan",
+                        "summary": "Ultraplan is rolling out",
+                        "published": "2026-04-09T00:00:00Z",
+                    }
+                ]
+            },
+        )()
+
+        collector = TechCollector()
+        items = collector.fetch_reddit_keyword_matches()
+
+        self.assertTrue(any("Ultraplan" in item["title"] for item in items))
+        self.assertTrue(any(item["url"] == "https://reddit.example.com/ultraplan" for item in items))
+        self.assertTrue(any(item.get("metadata", {}).get("recent_feature_signal") for item in items))
+
     def test_estimate_recent_star_delta_counts_only_recent_stars(self):
         collector = TechCollector()
         since_dt = datetime(2026, 4, 8, tzinfo=timezone.utc)

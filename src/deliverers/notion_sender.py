@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from html import unescape
 from datetime import datetime, timedelta, timezone
 
 from src.config import Config
@@ -11,8 +13,26 @@ try:
 except ImportError:  # pragma: no cover - optional dependency in dry-run
     Client = None
 
+try:
+    from bs4 import BeautifulSoup
+except ImportError:  # pragma: no cover - optional dependency in minimal test envs
+    BeautifulSoup = None
+
 
 class NotionSender:
+    _MAX_BLOCKS = 100
+    _PROVIDER_KEYWORDS = (
+        "claude",
+        "anthropic",
+        "gpt",
+        "chatgpt",
+        "openai",
+        "codex",
+        "gemini",
+        "xai",
+        "grok",
+    )
+
     def __init__(
         self,
         *,
@@ -68,19 +88,21 @@ class NotionSender:
                 }
             )
 
-        for item in report.items:
-            blocks.extend(
-                self._build_item_blocks(
-                    item.title,
-                    item.url,
-                    item.summary,
-                    item.insight,
-                    bg_color,
-                    source_name=item.source_name,
-                    source_type=item.source_type,
-                    published_at=item.published_at,
-                )
+        reserved_tail_blocks = 2 if report.outlook else 0
+        for item in self._sorted_render_items(report):
+            item_blocks = self._build_item_blocks(
+                item["title"],
+                item["url"],
+                item["summary"],
+                item["insight"],
+                bg_color,
+                source_name=item["source_name"],
+                source_type=item["source_type"],
+                published_at=item["published_at"],
             )
+            if len(blocks) + len(item_blocks) + reserved_tail_blocks > self._MAX_BLOCKS:
+                break
+            blocks.extend(item_blocks)
 
         if report.outlook:
             blocks.append({"object": "block", "type": "divider", "divider": {}})
@@ -117,7 +139,15 @@ class NotionSender:
             {
                 "object": "block",
                 "type": "heading_3",
-                "heading_3": {"rich_text": [{"text": {"content": title}}]},
+                "heading_3": {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": title,
+                            }
+                        }
+                    ]
+                },
             }
         ]
         meta_parts = [
@@ -148,14 +178,15 @@ class NotionSender:
                     "bulleted_list_item": {"rich_text": [{"text": {"content": summary}}]},
                 }
             )
-        if insight:
+        if insight or url:
+            prefix = f"💡 深度洞察: {insight}\n\n" if insight else ""
             blocks.append(
                 {
                     "object": "block",
                     "type": "callout",
                     "callout": {
                         "rich_text": [
-                            {"text": {"content": f"💡 深度洞察: {insight}\n\n"}},
+                            {"text": {"content": prefix}},
                             {
                                 "text": {"content": "🔗 查看原文", "link": {"url": url}},
                                 "annotations": {
@@ -201,6 +232,108 @@ class NotionSender:
         )
         logger.info("Detailed report created in Notion.")
         return page["url"]
+
+    def _clean_appendix_snippet(self, text: str) -> str:
+        if not text:
+            return ""
+
+        cleaned = unescape(text)
+        cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
+        if BeautifulSoup is not None:
+            cleaned = BeautifulSoup(cleaned, "html.parser").get_text(" ", strip=True)
+        else:
+            cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+
+        cleaned = re.sub(
+            r"^(RSS fallback|Search match for [^|]+|Collected from [^.]+ listing page\.)\s*\|?\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    def _sorted_render_items(self, report: AnalyzedReport) -> list[dict]:
+        primary_items: list[dict] = []
+        for item in report.items:
+            primary_items.append(
+                {
+                    "title": item.title,
+                    "url": item.url,
+                    "summary": item.summary,
+                    "insight": item.insight,
+                    "source_name": item.source_name,
+                    "source_type": item.source_type,
+                    "published_at": item.published_at,
+                    "is_primary": True,
+                }
+            )
+
+        appendix_items: list[dict] = []
+        for item in report.metadata.get("appendix_items", []):
+            title = str(item.get("title", "")).strip()
+            url = str(item.get("url", "")).strip()
+            if not title or not url:
+                continue
+            snippet = self._clean_appendix_snippet(str(item.get("summary") or item.get("desc", "")).strip())
+            if len(snippet) > 180:
+                snippet = snippet[:177].rstrip() + "..."
+            appendix_items.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "summary": snippet,
+                    "insight": str(item.get("insight", "")).strip(),
+                    "source_name": str(item.get("source_name", "")).strip(),
+                    "source_type": str(item.get("source_type", "")).strip(),
+                    "published_at": str(item.get("published_at", "")).strip() or None,
+                    "is_primary": False,
+                }
+            )
+
+        appendix_items.sort(key=self._render_item_sort_key)
+        return primary_items + appendix_items
+
+    def _render_item_sort_key(self, item: dict) -> tuple[int, int, int, float]:
+        source_type = str(item.get("source_type", "")).strip().lower()
+        text = " ".join(
+            [
+                str(item.get("title", "")),
+                str(item.get("summary", "")),
+                str(item.get("source_name", "")),
+            ]
+        ).lower()
+        has_provider = any(keyword in text for keyword in self._PROVIDER_KEYWORDS)
+
+        if source_type in {"github_repo", "github_release"}:
+            bucket = 4
+        elif source_type == "community" and has_provider:
+            bucket = 2
+        elif source_type == "community":
+            bucket = 3
+        elif has_provider:
+            bucket = 0
+        else:
+            bucket = 1
+
+        published_at = self._parse_sort_datetime(str(item.get("published_at", "")).strip())
+        published_key = -published_at.timestamp() if published_at else float("inf")
+        primary_penalty = 0 if item.get("is_primary") else 1
+        return (bucket, 0 if has_provider else 1, primary_penalty, published_key)
+
+    def _parse_sort_datetime(self, value: str) -> datetime | None:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return None
+        if cleaned.endswith("Z"):
+            cleaned = f"{cleaned[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _build_title(self, title_prefix: str, now: datetime | None = None) -> str:
         tw_tz = timezone(timedelta(hours=8))

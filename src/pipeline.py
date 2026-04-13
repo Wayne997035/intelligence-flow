@@ -20,6 +20,18 @@ _SOURCE_TYPE_SCORES = {
     "community": 40,
     "unknown": 10,
 }
+_CORE_PROVIDER_TERMS = (
+    "claude",
+    "anthropic",
+    "gpt",
+    "chatgpt",
+    "openai",
+    "codex",
+    "gemini",
+    "google",
+    "xai",
+    "grok",
+)
 
 
 def normalize_text(value: str | None) -> str:
@@ -97,6 +109,9 @@ def normalize_item(
 def is_low_signal_item(item: IntelligenceItem) -> bool:
     title = normalize_text(item.title)
     lowered = title.lower()
+    desc = normalize_text(item.desc).lower()
+    source_name = normalize_text(item.source_name).lower()
+    url = canonicalize_url(item.url).lower()
 
     # Filter out very short or generic community headlines.
     generic_titles = {"unexpected", "thoughts", "help", "question", "thought", "wow"}
@@ -106,13 +121,35 @@ def is_low_signal_item(item: IntelligenceItem) -> bool:
         if lowered in generic_titles or lowered.startswith("[reddit") and len(title.split()) <= 3:
             return True
 
+    if item.source_type in {"official_news", "news"}:
+        if "openai.com/academy/" in url and not any(
+            keyword in f"{lowered} {desc}"
+            for keyword in ("responses", "codex", "projects", "connector", "api", "agent builder")
+        ):
+            return True
+        if any(
+            keyword in f"{lowered} {desc}"
+            for keyword in (
+                "marketing teams",
+                "study for finals",
+                "education",
+                "for beginners",
+                "tips",
+                "how to use",
+            )
+        ) and not any(keyword in f"{lowered} {desc}" for keyword in ("notebooklm", "notebooks", "codex", "responses")):
+            return True
+
+    if item.source_type == "model_release":
+        if source_name == "hugging face" and any(keyword in lowered for keyword in ("gemma-4", "gemma 4")):
+            family_match = re.search(r"gemma[- ]4[- ]([a-z0-9]+)", lowered)
+            if family_match:
+                item.metadata.setdefault("model_family_key", f"gemma-4-{family_match.group(1)}")
+
     return False
 
 
 def is_relevant_ai_item(item: IntelligenceItem) -> bool:
-    if item.source_type in {"official_news", "model_release", "research", "github_release", "github_repo"}:
-        return True
-
     text = f"{normalize_text(item.title)} {normalize_text(item.desc)}".lower()
     positive_keywords = [
         "model",
@@ -145,6 +182,12 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
         "lawsuit",
         "probe",
         "investigation",
+        "compromise",
+        "breach",
+        "banned",
+        "ban",
+        "fear and loathing",
+        "drama",
         "arrested",
         "molotov",
         "shooting",
@@ -159,6 +202,10 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
 
     if any(keyword in text for keyword in negative_keywords):
         return False
+    if item.source_type in {"official_news", "model_release", "research", "github_release", "github_repo"}:
+        return True
+    if item.source_type == "community" and item.metadata.get("recent_feature_signal"):
+        return True
     return any(keyword in text for keyword in positive_keywords)
 
 
@@ -189,6 +236,9 @@ def deduplicate_and_rank(
 
         title_key = re.sub(r"[^a-z0-9]+", "", normalized.title.lower())[:96]
         dedupe_key = normalized.url
+        family_key = normalized.metadata.get("model_family_key")
+        if family_key:
+            dedupe_key = f"model-family:{family_key}"
         if title_key and len(title_key) >= 24:
             dedupe_key = title_index.get(title_key, dedupe_key)
 
@@ -208,11 +258,23 @@ def deduplicate_and_rank(
             return float("-inf")
         return parsed.timestamp()
 
+    def _provider_priority(item: IntelligenceItem) -> int:
+        haystack = " ".join(
+            [
+                normalize_text(item.title),
+                normalize_text(item.desc),
+                normalize_text(item.source_name),
+                canonicalize_url(item.url),
+            ]
+        ).lower()
+        return 0 if any(term in haystack for term in _CORE_PROVIDER_TERMS) else 1
+
     ranked = list(unique_items.values())
     reverse_order_index = {id(item): key for key, item in unique_items.items()}
     ranked.sort(
         key=lambda item: (
             item.priority,
+            _provider_priority(item),
             -source_quality_score(item),
             -_published_timestamp(item),
             order_index.get(reverse_order_index.get(id(item), ""), 10**9),

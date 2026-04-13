@@ -132,7 +132,7 @@ class TestAnalyzer(unittest.TestCase):
         self.assertEqual(parsed.items[0].source_name, "ExampleSource")
         self.assertEqual(parsed.items[0].published_at, "2026-04-12T00:00:00Z")
 
-    def test_post_process_ai_report_keeps_latest_official_cluster_items(self):
+    def test_post_process_ai_report_prefers_distinct_official_sources(self):
         analyzer = AIAnalyzer(enable_ai=False)
         report = AnalyzedReport(
             title="AI 技術前沿情報",
@@ -182,4 +182,131 @@ class TestAnalyzer(unittest.TestCase):
         urls = {item.url for item in processed.items}
 
         self.assertIn("https://example.com/official/latest#a", urls)
-        self.assertIn("https://example.com/official/latest#b", urls)
+        self.assertIn("https://example.com/another-official", urls)
+        self.assertNotIn("https://example.com/official/latest#b", urls)
+
+    def test_post_process_ai_report_backfills_core_provider_coverage(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Anthropic item only",
+                    url="https://example.com/anthropic",
+                    summary="s",
+                    insight="i",
+                    source_name="Anthropic",
+                    source_type="official_news",
+                    published_at="2026-04-12T08:00:00Z",
+                )
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+        news = [
+            IntelligenceItem(
+                title="Anthropic item only",
+                url="https://example.com/anthropic",
+                desc="desc",
+                source_name="Anthropic",
+                source_type="official_news",
+                published_at="2026-04-12T08:00:00Z",
+            ),
+            IntelligenceItem(
+                title="OpenAI Responses update",
+                url="https://platform.openai.com/docs/changelog#responses",
+                desc="desc",
+                source_name="OpenAI API Changelog",
+                source_type="official_news",
+                published_at="2026-04-12T09:00:00Z",
+            ),
+            IntelligenceItem(
+                title="Gemini API notes",
+                url="https://ai.google.dev/gemini-api/docs/changelog#gemini",
+                desc="desc",
+                source_name="Gemini API Release Notes",
+                source_type="official_news",
+                published_at="2026-04-12T10:00:00Z",
+            ),
+            IntelligenceItem(
+                title="Grok API notes",
+                url="https://docs.x.ai/developers/release-notes#grok",
+                desc="desc",
+                source_name="xAI Release Notes",
+                source_type="official_news",
+                published_at="2026-04-12T11:00:00Z",
+            ),
+        ]
+
+        processed = analyzer._post_process_ai_report(report, news)
+        provider_sources = {item.source_name for item in processed.items}
+
+        self.assertIn("Anthropic", provider_sources)
+        self.assertIn("OpenAI API Changelog", provider_sources)
+        self.assertIn("Gemini API Release Notes", provider_sources)
+        self.assertIn("xAI Release Notes", provider_sources)
+
+    def test_build_ai_brief_item_generates_chinese_summary_for_model_release(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="[HF Model] google/gemma-4-E2B-it (417 likes)",
+                url="https://huggingface.co/google/gemma-4-E2B-it",
+                desc="Downloads: 857206 | Task: any-to-any",
+                source_name="Hugging Face",
+                source_type="model_release",
+                published_at="2026-04-10T16:35:43.000Z",
+            )
+        )
+
+        self.assertIn("模型更新重點", brief["summary"])
+        self.assertIn("任務類型", brief["summary"])
+
+    def test_build_ai_brief_item_generates_chinese_summary_for_community(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="[Reddit r/ClaudeAI] Has any one got UltraPlan to work?",
+                url="https://reddit.example.com/ultraplan",
+                desc="People are sharing first impressions after rollout.",
+                source_name="Reddit/ClaudeAI",
+                source_type="community",
+                published_at="2026-04-08T14:16:30+00:00",
+            )
+        )
+
+        self.assertIn("社群近期討論焦點", brief["summary"])
+        self.assertIn("Anthropic", brief["insight"])
+
+    def test_build_ai_brief_item_generates_specific_insight_for_advisor_tool(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="[Official] Claude Platform April 9, 2026: We've launched the advisor tool in public beta.",
+                url="https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool",
+                desc="Advisor pairs a strategic model with a faster executor model.",
+                source_name="Claude Platform Release Notes",
+                source_type="official_news",
+                published_at="2026-04-09T00:00:00Z",
+            )
+        )
+
+        self.assertIn("雙模型協作", brief["insight"])
+        self.assertIn("Agent workflow", brief["insight"])
+
+    def test_build_ai_brief_item_generates_specific_insight_for_chatgpt_pro(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="ChatGPT has a new $100 per month Pro subscription",
+                url="https://www.theverge.com/ai-artificial-intelligence/909599/chatgpt-pro-subscription-new",
+                desc="OpenAI announced a new Pro tier with more Codex usage.",
+                source_name="The Verge",
+                source_type="news",
+                published_at="2026-04-09T22:57:15Z",
+            )
+        )
+
+        self.assertIn("OpenAI", brief["insight"])
+        self.assertIn("商業化", brief["insight"])

@@ -31,7 +31,7 @@ class NewsCollector:
         )
 
     def fetch_ai_tech_news(self) -> list[dict]:
-        domains = "openai.com,anthropic.com,github.blog,blog.google,ai.google.dev,huggingface.co,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com"
+        domains = "openai.com,platform.openai.com,anthropic.com,code.claude.com,github.blog,blog.google,ai.google.dev,x.ai,docs.x.ai,huggingface.co,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com"
         keywords = [
             "model release",
             "reasoning model",
@@ -45,7 +45,11 @@ class NewsCollector:
             "ChatGPT",
             "Codex",
             "Anthropic",
+            "Claude Code",
+            "Ultraplan",
             "Google Gemini",
+            "NotebookLM",
+            "notebooks",
             "Google Gemma",
             "Gemma",
             "xAI",
@@ -75,8 +79,14 @@ class NewsCollector:
                 "Codex",
                 "Grok",
                 "ChatGPT",
+                "Claude Code",
+                "Ultraplan",
+                "NotebookLM",
+                "notebooks",
+                "Grok multi-agent",
+                "Gemini Interactions API",
             ],
-            domains="anthropic.com,openai.com,github.blog,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com",
+            domains="anthropic.com,code.claude.com,openai.com,platform.openai.com,github.blog,ai.google.dev,x.ai,docs.x.ai,techcrunch.com,venturebeat.com,theverge.com,arstechnica.com",
             page_size=10,
             days_back=Config.AI_NEWS_LOOKBACK_DAYS,
             source_type="news",

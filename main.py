@@ -41,13 +41,13 @@ def trim_descriptions(items: list[dict], max_length: int) -> list[dict]:
 
 def select_ai_report_candidates(items: list, limit: int) -> list:
     quotas = [
-        ("official_news", 4),
-        ("github_release", 2),
-        ("github_repo", 3),
+        ("official_news", 6),
+        ("news", 4),
         ("model_release", 2),
+        ("community", 3),
+        ("github_release", 1),
         ("research", 1),
-        ("news", 2),
-        ("community", 2),
+        ("github_repo", 1),
     ]
     selected: list = []
     selected_urls: set[str] = set()
@@ -92,6 +92,39 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
         deduped.append(item)
 
     return deduped[:limit]
+
+
+def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> None:
+    report_item_urls = {item.url for item in report.items if item.url}
+    report_item_titles = {item.title.strip().lower() for item in report.items if item.title}
+    appendix_items: list[dict] = []
+
+    for item in selected_items:
+        source_type = getattr(item, "source_type", "") or ""
+        metadata = getattr(item, "metadata", {}) or {}
+        if source_type == "community" and not (metadata.get("recent_feature_signal") or metadata.get("keyword_match")):
+            continue
+
+        item_title = (item.title or "").strip().lower()
+        if item.url in report_item_urls or (item_title and item_title in report_item_titles):
+            continue
+        if summarize_item:
+            appendix_items.append(summarize_item(item))
+        else:
+            appendix_items.append(
+                {
+                    "title": item.title,
+                    "url": item.url,
+                    "summary": getattr(item, "desc", "") or getattr(item, "summary", ""),
+                    "insight": "",
+                    "source_name": item.source_name,
+                    "source_type": item.source_type,
+                    "published_at": item.published_at,
+                }
+            )
+
+    if appendix_items:
+        report.metadata["appendix_items"] = appendix_items
 
 
 def load_fixture_bundle(path: Path) -> dict:
@@ -143,21 +176,19 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     ai_priority = [
         "Claude",
         "Gemini",
-        "Gemma",
+        "Anthropic",
+        "OpenAI",
+        "GPT",
+        "ChatGPT",
+        "Codex",
         "xAI",
         "Grok",
-        "Codex",
-        "ChatGPT",
-        "OpenAI",
-        "Anthropic",
+        "Google",
         "model release",
         "agent",
         "agentic",
-        "skill",
         "workflow",
         "tool use",
-        "GitHub Release",
-        "GPT",
         "DeepSeek",
         "Llama",
         "Qwen",
@@ -218,7 +249,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
         stock_news = stock_news_recent[:12]
     if not ai_news and ai_news_recent:
         ai_news = ai_news_recent[:30]
-    ai_news = select_ai_report_candidates(ai_news, limit=15)
+    ai_news = select_ai_report_candidates(ai_news, limit=24)
     ai_selected_urls = {item.url for item in ai_news}
     ai_recent_not_selected = [item.title for item in ai_news_recent if item.url not in ai_selected_urls][:12]
 
@@ -233,6 +264,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     )
 
     ai_report = analyzer.analyze_ai_tech(ai_news)
+    attach_ai_appendix(ai_report, ai_news_recent, summarize_item=analyzer.build_ai_brief_item)
     ai_report.metadata["history_duplicates_skipped"] = skipped_ai_duplicates
     ai_notion_url = notion.create_ai_tech_report(ai_report)
     ai_payload = discord.send_ai_tech_report(ai_report, ai_notion_url)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import requests
 
@@ -157,6 +158,7 @@ class TechCollector:
                 results.extend(rss_items)
                 continue
             logger.warning("Reddit RSS fetch returned no entries for %s.", subreddit)
+        results.extend(self.fetch_reddit_keyword_matches())
         return results
 
     def fetch_all_community_ai(self) -> list[dict]:
@@ -191,6 +193,77 @@ class TechCollector:
                 }
             )
         return results
+
+    def fetch_reddit_keyword_matches(self) -> list[dict]:
+        if feedparser is None:
+            return []
+
+        queries = [
+            ("ClaudeAI", "ultraplan"),
+            ("ClaudeAI", "\"claude code\""),
+            ("OpenAI", "\"responses api\""),
+            ("GoogleGemini", "\"gemini api\""),
+            ("singularity", "\"grok\""),
+        ]
+        results: list[dict] = []
+        seen_links: set[str] = set()
+
+        for subreddit, query in queries:
+            feed_url = (
+                f"https://www.reddit.com/r/{subreddit}/search.rss?q={quote(query)}"
+                "&restrict_sr=on&sort=new&t=week"
+            )
+            try:
+                feed = feedparser.parse(feed_url)
+            except Exception as exc:  # pragma: no cover - parser edge cases
+                logger.warning("Reddit search RSS parse failed for %s / %s: %s", subreddit, query, exc)
+                continue
+
+            for entry in getattr(feed, "entries", [])[:3]:
+                title = (entry.get("title") or "").strip()
+                link = (entry.get("link") or "").strip()
+                if not title or not link or link in seen_links:
+                    continue
+                seen_links.add(link)
+                summary = (entry.get("summary") or "").strip()
+                recent_feature_signal = self._has_recent_feature_signal(title, summary)
+                results.append(
+                    {
+                        "title": f"[Reddit r/{subreddit}] {title}",
+                        "url": link,
+                        "desc": f"Search match for {query} | {summary[:120]}...",
+                        "source_name": f"Reddit/{subreddit}",
+                        "source_type": "community",
+                        "published_at": entry.get("published") or entry.get("updated"),
+                        "metadata": {
+                            "keyword_match": query,
+                            "recent_feature_signal": recent_feature_signal,
+                        },
+                    }
+                )
+        return results
+
+    def _has_recent_feature_signal(self, title: str, summary: str) -> bool:
+        text = f"{title} {summary}".lower()
+        signal_phrases = [
+            "introduces",
+            "introduced",
+            "now available",
+            "rolling out",
+            "rollout",
+            "released",
+            "release",
+            "preview",
+            "draft",
+            "new feature",
+            "new mode",
+            "got",
+            "to work",
+            "feels more like",
+            "first impressions",
+            "just shipped",
+        ]
+        return any(phrase in text for phrase in signal_phrases)
 
     def _github_headers(self, *, timeline_preview: bool = False) -> dict[str, str]:
         accept = "application/vnd.github+json"
