@@ -132,6 +132,33 @@ class TestAnalyzer(unittest.TestCase):
         self.assertEqual(parsed.items[0].source_name, "ExampleSource")
         self.assertEqual(parsed.items[0].published_at, "2026-04-12T00:00:00Z")
 
+    def test_parse_response_drops_items_with_invalid_url(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        raw = """{
+          "summary": "summary",
+          "items": [
+            {
+              "title": "invalid",
+              "url": "N/A",
+              "summary": "bad",
+              "insight": "bad"
+            },
+            {
+              "title": "valid",
+              "url": "https://example.com/item",
+              "summary": "good",
+              "insight": "good"
+            }
+          ],
+          "outlook": "outlook"
+        }"""
+        parsed = analyzer._parse_response(raw, title="AI 技術前沿情報", outlook_label="🔮 未來展望")
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(len(parsed.items), 1)
+        self.assertEqual(parsed.items[0].title, "valid")
+
     def test_post_process_ai_report_prefers_distinct_official_sources(self):
         analyzer = AIAnalyzer(enable_ai=False)
         report = AnalyzedReport(
@@ -247,6 +274,50 @@ class TestAnalyzer(unittest.TestCase):
         self.assertIn("Gemini API Release Notes", provider_sources)
         self.assertIn("xAI Release Notes", provider_sources)
 
+    def test_post_process_stock_report_replaces_invalid_url_item_with_real_sources(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="投資情報報告",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Apple 股價逆勢下跌，與科技族群走勢背離",
+                    url="N/A",
+                    summary="s",
+                    insight="i",
+                    source_name="unknown",
+                    source_type="unknown",
+                    published_at=None,
+                )
+            ],
+            outlook="o",
+            outlook_label="🕵️ 專家總結",
+        )
+        news = [
+            IntelligenceItem(
+                title="台積電營收年增 35% 創新高，AI 晶片需求持續強勁",
+                url="https://example.com/tsmc",
+                desc="record revenue",
+                source_name="CNBC",
+                source_type="news",
+                published_at="2026-04-12T00:00:00Z",
+            ),
+            IntelligenceItem(
+                title="Broadcom 與 Google 深化合作，帶動雲端供應鏈利多",
+                url="https://example.com/avgo",
+                desc="asic partnership",
+                source_name="CNBC",
+                source_type="news",
+                published_at="2026-04-11T00:00:00Z",
+            ),
+        ]
+
+        processed = analyzer._post_process_stock_report(report, news)
+
+        self.assertEqual(len(processed.items), 2)
+        self.assertEqual(processed.items[0].url, "https://example.com/tsmc")
+        self.assertEqual(processed.items[1].url, "https://example.com/avgo")
+
     def test_build_ai_brief_item_generates_chinese_summary_for_model_release(self):
         analyzer = AIAnalyzer(enable_ai=False)
         brief = analyzer.build_ai_brief_item(
@@ -310,3 +381,20 @@ class TestAnalyzer(unittest.TestCase):
 
         self.assertIn("OpenAI", brief["insight"])
         self.assertIn("商業化", brief["insight"])
+
+    def test_build_stock_brief_item_generates_richer_market_insight(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_stock_brief_item(
+            IntelligenceItem(
+                title="Nvidia-backed SiFive hits $3.65 billion valuation for open AI chips",
+                url="https://example.com/sifive",
+                desc="SiFive valuation climbed as investors looked for alternative AI chip architectures.",
+                source_name="TechCrunch",
+                source_type="news",
+                published_at="2026-04-11T00:00:00Z",
+            )
+        )
+
+        self.assertIn("估值", brief["insight"])
+        self.assertIn("同賽道", brief["insight"])
+        self.assertIn("後續", brief["insight"])

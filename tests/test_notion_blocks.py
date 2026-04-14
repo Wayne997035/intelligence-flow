@@ -80,6 +80,12 @@ class TestDeliverers(unittest.TestCase):
 
         callout_blocks = [block for block in blocks if block["type"] == "callout"]
         self.assertEqual(len(callout_blocks), 4)
+        self.assertTrue(
+            callout_blocks[0]["callout"]["rich_text"][0]["text"]["content"].startswith("深度洞察: ")
+        )
+        self.assertFalse(
+            callout_blocks[0]["callout"]["rich_text"][0]["text"]["content"].startswith("💡 ")
+        )
         link_text = callout_blocks[0]["callout"]["rich_text"][1]["text"]["link"]["url"]
         self.assertEqual(link_text, "https://example.com/news1")
         metadata_lines = [
@@ -126,6 +132,24 @@ class TestDeliverers(unittest.TestCase):
 
         self.assertTrue(any("附錄來源" in blob for blob in text_blobs))
         self.assertFalse(any("延伸來源附錄" in blob for blob in text_blobs))
+
+    def test_notion_skips_invalid_links_but_keeps_insight_text(self):
+        sender = NotionSender(dry_run=True)
+        blocks = sender._build_item_blocks(
+            "無效連結測試",
+            "javascript:alert(1)",
+            "摘要",
+            "這是洞察",
+            "blue_background",
+            source_name="Example",
+            source_type="news",
+            published_at="2026-04-12T10:00:00Z",
+        )
+
+        callout = next(block for block in blocks if block["type"] == "callout")
+        rich_text = callout["callout"]["rich_text"]
+        self.assertEqual(len(rich_text), 1)
+        self.assertEqual(rich_text[0]["text"]["content"], "深度洞察: 這是洞察\n\n")
 
     def test_notion_extra_items_sort_providers_then_community_then_github(self):
         sender = NotionSender(dry_run=True)
@@ -270,6 +294,106 @@ class TestDeliverers(unittest.TestCase):
         self.assertIn("區:79.90-80.80", description)
         self.assertIn("現:2000 | 變:+60", description)
         self.assertIn("區:1970-2000", description)
+
+    @patch("main.select_ai_report_candidates")
+    @patch("main.RunStateStore")
+    @patch("main.DiscordSender")
+    @patch("main.NotionSender")
+    @patch("main.AIAnalyzer")
+    def test_build_reports_stock_appendix_uses_recent_items_not_selected_pool(
+        self,
+        mock_analyzer_cls,
+        mock_notion_cls,
+        mock_discord_cls,
+        mock_state_store_cls,
+        mock_select_candidates,
+    ):
+        primary_stock_item = {
+            "title": "Nvidia backed SiFive valuation climbs",
+            "url": "https://example.com/sifive",
+            "desc": "SiFive valuation climbed after new AI chip optimism.",
+            "source_name": "TechCrunch",
+            "source_type": "news",
+            "published_at": "2026-04-11T00:00:00Z",
+        }
+        appendix_stock_item = {
+            "title": "TSMC sees stronger AI demand into next quarter",
+            "url": "https://example.com/tsmc-demand",
+            "desc": "Foundry demand remains firm as AI infrastructure orders continue.",
+            "source_name": "Reuters",
+            "source_type": "news",
+            "published_at": "2026-04-10T00:00:00Z",
+        }
+
+        mock_select_candidates.side_effect = lambda items, limit: items[:1]
+
+        analyzer = mock_analyzer_cls.return_value
+        analyzer.analyze_stock_market.return_value = AnalyzedReport(
+            title="Stock",
+            summary="stock summary",
+            items=[
+                ReportItem(
+                    title=primary_stock_item["title"],
+                    url=primary_stock_item["url"],
+                    summary=primary_stock_item["desc"],
+                    insight="市場正在重估 AI 晶片設計公司的成長空間。",
+                    source_name=primary_stock_item["source_name"],
+                    source_type=primary_stock_item["source_type"],
+                    published_at=primary_stock_item["published_at"],
+                )
+            ],
+            outlook="stock outlook",
+            outlook_label="outlook",
+        )
+        analyzer.build_stock_brief_item.side_effect = lambda item: {
+            "title": item["title"] if isinstance(item, dict) else item.title,
+            "url": item["url"] if isinstance(item, dict) else item.url,
+            "summary": item["desc"] if isinstance(item, dict) else item.desc,
+            "insight": "後續可觀察供應鏈訂單與估值是否同步擴張。",
+            "source_name": item["source_name"] if isinstance(item, dict) else item.source_name,
+            "source_type": item["source_type"] if isinstance(item, dict) else item.source_type,
+            "published_at": item["published_at"] if isinstance(item, dict) else item.published_at,
+        }
+        analyzer.analyze_ai_tech.return_value = AnalyzedReport(
+            title="AI",
+            summary="ai summary",
+            items=[],
+            outlook="ai outlook",
+            outlook_label="outlook",
+        )
+        analyzer.build_ai_brief_item.side_effect = lambda item: {
+            "title": item["title"] if isinstance(item, dict) else item.title,
+            "url": item["url"] if isinstance(item, dict) else item.url,
+            "summary": item["desc"] if isinstance(item, dict) else item.desc,
+            "insight": "",
+            "source_name": item["source_name"] if isinstance(item, dict) else item.source_name,
+            "source_type": item["source_type"] if isinstance(item, dict) else item.source_type,
+            "published_at": item["published_at"] if isinstance(item, dict) else item.published_at,
+        }
+
+        mock_notion_cls.return_value.create_stock_insight_report.return_value = None
+        mock_notion_cls.return_value.create_ai_tech_report.return_value = None
+        mock_discord_cls.return_value.send_stock_and_analysis.return_value = {}
+        mock_discord_cls.return_value.send_ai_tech_report.return_value = {}
+
+        state_store = mock_state_store_cls.return_value
+        state_store.filter_new_items.side_effect = lambda category, items, limit: (items[:limit], 0)
+
+        result = build_reports(
+            {
+                "us_stocks": [],
+                "tw_stocks": [],
+                "stock_news": [primary_stock_item, appendix_stock_item],
+                "ai_news": [],
+            },
+            enable_ai=False,
+            dry_run=True,
+        )
+
+        appendix_urls = {
+            item["url"] for item in result["stock_report"].metadata.get("appendix_items", [])
+        }
+        self.assertIn("https://example.com/tsmc-demand", appendix_urls)
 
     @patch("main.select_ai_report_candidates")
     @patch("main.RunStateStore")

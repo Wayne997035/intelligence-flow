@@ -94,7 +94,7 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
     return deduped[:limit]
 
 
-def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> None:
+def attach_report_appendix(report, selected_items: list, *, summarize_item=None) -> None:
     report_item_urls = {item.url for item in report.items if item.url}
     report_item_titles = {item.title.strip().lower() for item in report.items if item.title}
     appendix_items: list[dict] = []
@@ -125,6 +125,10 @@ def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> 
 
     if appendix_items:
         report.metadata["appendix_items"] = appendix_items
+
+
+def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> None:
+    attach_report_appendix(report, selected_items, summarize_item=summarize_item)
 
 
 def load_fixture_bundle(path: Path) -> dict:
@@ -254,6 +258,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     ai_recent_not_selected = [item.title for item in ai_news_recent if item.url not in ai_selected_urls][:12]
 
     stock_report = analyzer.analyze_stock_market(inputs.get("us_stocks", []) + inputs.get("tw_stocks", []), stock_news)
+    attach_report_appendix(stock_report, stock_news_recent, summarize_item=analyzer.build_stock_brief_item)
     stock_report.metadata["history_duplicates_skipped"] = skipped_stock_duplicates
     stock_notion_url = notion.create_stock_insight_report(stock_report)
     stock_payload = discord.send_stock_and_analysis(
@@ -264,7 +269,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     )
 
     ai_report = analyzer.analyze_ai_tech(ai_news)
-    attach_ai_appendix(ai_report, ai_news_recent, summarize_item=analyzer.build_ai_brief_item)
+    attach_report_appendix(ai_report, ai_news_recent, summarize_item=analyzer.build_ai_brief_item)
     ai_report.metadata["history_duplicates_skipped"] = skipped_ai_duplicates
     ai_notion_url = notion.create_ai_tech_report(ai_report)
     ai_payload = discord.send_ai_tech_report(ai_report, ai_notion_url)

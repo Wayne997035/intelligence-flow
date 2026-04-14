@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from html import unescape
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from src.config import Config
 from src.models import AnalyzedReport
@@ -135,6 +136,7 @@ class NotionSender:
         source_type: str,
         published_at: str | None,
     ) -> list[dict]:
+        normalized_url = self._normalize_link_url(url)
         blocks: list[dict] = [
             {
                 "object": "block",
@@ -178,24 +180,26 @@ class NotionSender:
                     "bulleted_list_item": {"rich_text": [{"text": {"content": summary}}]},
                 }
             )
-        if insight or url:
-            prefix = f"💡 深度洞察: {insight}\n\n" if insight else ""
+        if insight or normalized_url:
+            prefix = f"深度洞察: {insight}\n\n" if insight else ""
+            rich_text = [{"text": {"content": prefix}}] if prefix else []
+            if normalized_url:
+                rich_text.append(
+                    {
+                        "text": {"content": "🔗 查看原文", "link": {"url": normalized_url}},
+                        "annotations": {
+                            "italic": True,
+                            "bold": True,
+                            "color": "blue",
+                        },
+                    }
+                )
             blocks.append(
                 {
                     "object": "block",
                     "type": "callout",
                     "callout": {
-                        "rich_text": [
-                            {"text": {"content": prefix}},
-                            {
-                                "text": {"content": "🔗 查看原文", "link": {"url": url}},
-                                "annotations": {
-                                    "italic": True,
-                                    "bold": True,
-                                    "color": "blue",
-                                },
-                            },
-                        ],
+                        "rich_text": rich_text,
                         "icon": {"emoji": "💡"},
                         "color": "blue_background" if "blue" in bg_color else "gray_background",
                     },
@@ -341,6 +345,22 @@ class NotionSender:
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         return f"{title_prefix} {current.astimezone(tw_tz).strftime('%Y-%m-%d %H:%M')}"
+
+    def _normalize_link_url(self, value: str) -> str | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        cleaned = "".join(ch for ch in raw if ch.isprintable() and ch not in "\r\n\t")
+        parsed = urlsplit(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            logger.warning("Skipping Notion link with unsupported URL: %r", value)
+            return None
+        normalized = parsed._replace(
+            path=quote(parsed.path, safe="/%:@-._~!$&'()*+,;="),
+            query=quote(parsed.query, safe="=&%:@-._~!$'()*+,;/?"),
+            fragment=quote(parsed.fragment, safe="=%:@-._~!$&'()*+,;/?"),
+        )
+        return urlunsplit(normalized)
 
     def _cap_blocks(self, blocks: list[dict], limit: int = 100) -> list[dict]:
         if len(blocks) <= limit:
