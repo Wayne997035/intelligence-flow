@@ -379,6 +379,7 @@ class TestDeliverers(unittest.TestCase):
         state_store = mock_state_store_cls.return_value
         state_store.filter_new_items.side_effect = lambda category, items, limit: (items[:limit], 0)
 
+        fixed_now = datetime(2026, 4, 12, 0, 0, 0, tzinfo=timezone.utc)
         result = build_reports(
             {
                 "us_stocks": [],
@@ -388,6 +389,7 @@ class TestDeliverers(unittest.TestCase):
             },
             enable_ai=False,
             dry_run=True,
+            now=fixed_now,
         )
 
         appendix_urls = {
@@ -470,6 +472,7 @@ class TestDeliverers(unittest.TestCase):
         state_store = mock_state_store_cls.return_value
         state_store.filter_new_items.side_effect = lambda category, items, limit: (items[:limit], 0)
 
+        fixed_now = datetime(2026, 4, 12, 0, 0, 0, tzinfo=timezone.utc)
         result = build_reports(
             {
                 "us_stocks": [],
@@ -479,6 +482,7 @@ class TestDeliverers(unittest.TestCase):
             },
             enable_ai=False,
             dry_run=True,
+            now=fixed_now,
         )
 
         appendix_urls = {

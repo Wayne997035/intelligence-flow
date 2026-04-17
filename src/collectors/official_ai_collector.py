@@ -71,6 +71,7 @@ class OfficialAICollector:
                 "name": "Anthropic News",
                 "url": "https://www.anthropic.com/news",
                 "link_prefixes": ["/news/"],
+                "limit": 8,
                 "keywords": [
                     "claude",
                     "anthropic",
@@ -78,8 +79,6 @@ class OfficialAICollector:
                     "agent",
                     "managed agents",
                     "api",
-                    "sonnet",
-                    "opus",
                 ],
             },
             {
@@ -87,13 +86,12 @@ class OfficialAICollector:
                 "url": "https://blog.google/innovation-and-ai/products/gemini-app/",
                 "link_prefixes": ["/innovation-and-ai/products/gemini-app/"],
                 "keywords": [
+                    "google",
                     "gemini",
                     "notebooklm",
-                    "notebooks",
                     "deep research",
                     "gemini app",
                     "gemini live",
-                    "project",
                     "google ai",
                 ],
             },
@@ -102,12 +100,9 @@ class OfficialAICollector:
                 "url": "https://blog.google/products/gemini/",
                 "link_prefixes": ["/products/gemini/", "/products-and-platforms/products/gemini/"],
                 "keywords": [
+                    "google",
                     "gemini",
                     "notebooklm",
-                    "notebooks",
-                    "deep think",
-                    "flash",
-                    "pro",
                     "gemma",
                     "google ai",
                 ],
@@ -167,15 +162,11 @@ class OfficialAICollector:
                 "name": "xAI Release Notes",
                 "url": "https://docs.x.ai/developers/release-notes",
                 "keywords": [
+                    "xai",
                     "grok",
                     "agent",
                     "multi-agent",
-                    "batch api",
-                    "live search",
-                    "image generation",
-                    "voice agent",
                     "api",
-                    "tools",
                 ],
             },
         ]
@@ -309,12 +300,13 @@ class OfficialAICollector:
                     }
                 )
             source_items.sort(key=lambda item: item.get("published_at") or "", reverse=True)
-            results.extend(source_items[:limit_per_source])
+            effective_limit = source.get("limit") or limit_per_source
+            results.extend(source_items[:effective_limit])
         return results
 
     def _fetch_claude_platform_release_notes(self, limit: int) -> list[dict]:
         url = "https://platform.claude.com/docs/en/release-notes/overview"
-        keywords = ["managed agents", "advisor", "tool", "agent", "api", "model", "sdk", "release", "claude"]
+        keywords = ["managed agents", "advisor", "tool", "agent", "api", "model", "sdk", "release", "claude", "anthropic"]
         try:
             html = self._fetch_page_text(url, source_name="Claude Platform Release Notes")
         except Exception as exc:  # pragma: no cover - live source failures

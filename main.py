@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from src.ai.analyzer import AIAnalyzer
@@ -165,7 +166,7 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
     }
 
 
-def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
+def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime | None = None) -> dict:
     analyzer = AIAnalyzer(enable_ai=enable_ai)
     notion = NotionSender(dry_run=dry_run)
     discord = DiscordSender(dry_run=dry_run)
@@ -229,11 +230,13 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool) -> dict:
     stock_news_recent = filter_recent_items(
         stock_news_ranked,
         max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
+        now=now,
         require_published_at=True,
     )
     ai_news_recent = filter_recent_items(
         ai_news_ranked,
         max_age_days=Config.AI_NEWS_LOOKBACK_DAYS,
+        now=now,
         require_published_at=True,
     )
     ai_recent_urls = {item.url for item in ai_news_recent}
