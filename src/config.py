@@ -69,6 +69,7 @@ class Config:
     INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "15"))
     STOCK_NEWS_LOOKBACK_DAYS = int(os.getenv("STOCK_NEWS_LOOKBACK_DAYS", "7"))
     AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
+    AI_HIGH_IMPACT_LOOKBACK_DAYS = int(os.getenv("AI_HIGH_IMPACT_LOOKBACK_DAYS", "30"))
     HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
     HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "12"))
     STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from src.ai.analyzer import AIAnalyzer
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
@@ -158,6 +159,20 @@ class TestAnalyzer(unittest.TestCase):
         assert parsed is not None
         self.assertEqual(len(parsed.items), 1)
         self.assertEqual(parsed.items[0].title, "valid")
+
+    def test_gemini_response_uses_structured_json_config(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        analyzer.groq_client = None
+        analyzer.gemini_client = Mock()
+        analyzer.gemini_client.models.generate_content.return_value = Mock(text='{"summary":"x","items":[],"outlook":"o"}')
+
+        response = analyzer._get_ai_response("prompt")
+
+        self.assertIsNotNone(response)
+        call = analyzer.gemini_client.models.generate_content.call_args
+        config = call.kwargs["config"]
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertIn("items", config.response_schema["properties"])
 
     def test_post_process_ai_report_prefers_distinct_official_sources(self):
         analyzer = AIAnalyzer(enable_ai=False)
@@ -365,6 +380,39 @@ class TestAnalyzer(unittest.TestCase):
 
         self.assertIn("雙模型協作", brief["insight"])
         self.assertIn("Agent workflow", brief["insight"])
+
+    def test_build_ai_brief_item_generates_specific_mythos_security_summary(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="[Official] Project Glasswing: Securing critical software for the AI era",
+                url="https://www.anthropic.com/glasswing",
+                desc="Claude Mythos Preview identified high-severity zero-day vulnerabilities.",
+                source_name="Anthropic Project Glasswing",
+                source_type="official_news",
+                published_at="2026-04-07T00:00:00+00:00",
+            )
+        )
+
+        self.assertIn("Claude Mythos", brief["summary"])
+        self.assertIn("資安", brief["summary"])
+        self.assertIn("存取控管", brief["insight"])
+
+    def test_build_ai_brief_item_avoids_generic_official_tracking_phrase(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        brief = analyzer.build_ai_brief_item(
+            IntelligenceItem(
+                title="[Official] Anthropic and NEC collaborate to build Japan’s largest AI engineering workforce",
+                url="https://www.anthropic.com/news/anthropic-nec",
+                desc="Collected from Anthropic News listing page.",
+                source_name="Anthropic News",
+                source_type="official_news",
+                published_at="2026-04-24T00:00:00+00:00",
+            )
+        )
+
+        self.assertIn("日本企業", brief["summary"])
+        self.assertNotIn("適合放進本輪重點追蹤", brief["insight"])
 
     def test_build_ai_brief_item_generates_specific_insight_for_chatgpt_pro(self):
         analyzer = AIAnalyzer(enable_ai=False)

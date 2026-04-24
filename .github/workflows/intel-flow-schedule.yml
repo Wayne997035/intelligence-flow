@@ -3,11 +3,11 @@ name: Intel Flow Schedule
 on:
   workflow_dispatch:
   schedule:
-    # Asia/Taipei 10:15 on weekdays (Mon-Fri)
-    - cron: "15 10 * * 1-5"
+    # Asia/Taipei 10:30 daily
+    - cron: "30 10 * * 1-7"
       timezone: "Asia/Taipei"
-    # Asia/Taipei 19:35 on weekdays (Mon-Fri)
-    - cron: "35 19 * * 1-5"
+    # Asia/Taipei 20:00 daily
+    - cron: "00 20 * * 1-7"
       timezone: "Asia/Taipei"
 
 permissions:
@@ -49,4 +49,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run intel flow once
-        run: python main.py --once --live-delivery --enable-ai
+        run: python main.py --once --live-delivery

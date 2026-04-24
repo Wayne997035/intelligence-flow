@@ -17,7 +17,14 @@ from src.collectors.tech_collector import TechCollector
 from src.config import Config
 from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
-from src.pipeline import deduplicate_and_rank, filter_recent_items, is_relevant_ai_item, normalize_item, parse_published_at
+from src.pipeline import (
+    ai_impact_score,
+    deduplicate_and_rank,
+    filter_recent_items,
+    is_relevant_ai_item,
+    normalize_item,
+    parse_published_at,
+)
 from src.utils.logger import logger
 from src.utils.state_store import RunStateStore, dump_artifact
 
@@ -132,9 +139,37 @@ def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> 
     attach_report_appendix(report, selected_items, summarize_item=summarize_item)
 
 
+def merge_unique_items(*item_groups: list) -> list:
+    merged: list = []
+    seen_urls: set[str] = set()
+    for items in item_groups:
+        for item in items:
+            url = getattr(item, "url", None) or (item.get("url") if isinstance(item, dict) else "")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged.append(item)
+    return merged
+
+
 def load_fixture_bundle(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def infer_bundle_now(bundle: dict) -> datetime | None:
+    published_times: list[datetime] = []
+    for category in ("stock_news", "ai_news"):
+        for item in bundle.get(category, []):
+            if not isinstance(item, dict):
+                continue
+            published_at = item.get("published_at")
+            parsed = parse_published_at(published_at)
+            if parsed is not None:
+                published_times.append(parsed)
+    if not published_times:
+        return None
+    return max(published_times)
 
 
 def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
@@ -180,6 +215,8 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     stock_priority = Config.US_STOCKS + Config.TW_STOCKS
     ai_priority = [
         "Claude",
+        "Mythos",
+        "Glasswing",
         "Gemini",
         "Anthropic",
         "OpenAI",
@@ -194,6 +231,10 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         "agentic",
         "workflow",
         "tool use",
+        "zero-day",
+        "vulnerability",
+        "cybersecurity",
+        "breach",
         "DeepSeek",
         "Llama",
         "Qwen",
@@ -239,6 +280,12 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         now=now,
         require_published_at=True,
     )
+    ai_high_impact_archive = filter_recent_items(
+        [item for item in ai_news_ranked if ai_impact_score(item) > 0],
+        max_age_days=Config.AI_HIGH_IMPACT_LOOKBACK_DAYS,
+        now=now,
+        require_published_at=True,
+    )
     ai_recent_urls = {item.url for item in ai_news_recent}
     ai_recent_cutoff_dropped = {"undated": 0, "older_than_window": 0}
     for item in ai_news_ranked:
@@ -272,7 +319,8 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     )
 
     ai_report = analyzer.analyze_ai_tech(ai_news)
-    attach_report_appendix(ai_report, ai_news_recent, summarize_item=analyzer.build_ai_brief_item)
+    ai_appendix_pool = merge_unique_items(ai_news_recent, ai_high_impact_archive)
+    attach_report_appendix(ai_report, ai_appendix_pool, summarize_item=analyzer.build_ai_brief_item)
     ai_report.metadata["history_duplicates_skipped"] = skipped_ai_duplicates
     ai_notion_url = notion.create_ai_tech_report(ai_report)
     ai_payload = discord.send_ai_tech_report(ai_report, ai_notion_url)
@@ -299,6 +347,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
                 "irrelevant_dropped": ai_irrelevant_count,
                 "ranked_count": len(ai_news_ranked),
                 "recent_count": len(ai_news_recent),
+                "high_impact_archive_count": len(ai_high_impact_archive),
                 "recent_cutoff_dropped": ai_recent_cutoff_dropped,
                 "history_or_limit_count": len(ai_news),
                 "recent_not_selected_sample": ai_recent_not_selected,
@@ -339,7 +388,8 @@ def run_job(*, use_fixture: bool, fixture_path: Path | None, enable_ai: bool, dr
         dry_run,
     )
     inputs = collect_inputs(use_fixture, fixture_path)
-    return build_reports(inputs, enable_ai=enable_ai, dry_run=dry_run)
+    reference_now = infer_bundle_now(inputs) if use_fixture else None
+    return build_reports(inputs, enable_ai=enable_ai, dry_run=dry_run, now=reference_now)
 
 
 def parse_args() -> argparse.Namespace:
@@ -353,11 +403,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_runtime_options(args: argparse.Namespace) -> tuple[bool, bool, bool]:
+    dry_run = Config.DRY_RUN
+    if args.live_delivery:
+        dry_run = False
+
+    use_fixture = args.use_fixture or Config.USE_FIXTURE_DATA
+    enable_ai = args.enable_ai or Config.ENABLE_AI_ANALYSIS
+    return dry_run, use_fixture, enable_ai
+
+
 if __name__ == "__main__":
     args = parse_args()
-    dry_run = not args.live_delivery
-    use_fixture = args.use_fixture or Config.USE_FIXTURE_DATA
-    enable_ai = args.enable_ai
+    dry_run, use_fixture, enable_ai = resolve_runtime_options(args)
     validate_runtime(enable_ai=enable_ai, dry_run=dry_run)
 
     if args.schedule:

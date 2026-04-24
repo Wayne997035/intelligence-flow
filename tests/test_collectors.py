@@ -3,10 +3,13 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from src.collectors.github_release_collector import GitHubReleaseCollector
+from src.collectors.news_collector import NewsCollector
 from src.collectors.official_ai_collector import OfficialAICollector
 from src.collectors.tech_collector import TechCollector
 from src.pipeline import (
+    ai_impact_score,
     canonicalize_url,
+    content_dedupe_key,
     deduplicate_and_rank,
     filter_recent_items,
     is_relevant_ai_item,
@@ -138,6 +141,19 @@ class TestPipeline(unittest.TestCase):
                 )
             )
         )
+
+    def test_is_relevant_ai_item_accepts_core_provider_security_incident(self):
+        item = normalize_item(
+            {
+                "title": "Anthropic investigates unauthorized access to Claude Mythos Preview",
+                "url": "https://example.com/claude-mythos-breach",
+                "desc": "The frontier cybersecurity model may have been accessed through a third-party vendor.",
+                "source_type": "news",
+            }
+        )
+
+        self.assertTrue(is_relevant_ai_item(item))
+        self.assertGreater(ai_impact_score(item), 0)
 
     def test_deduplicate_and_rank_filters_low_signal_openai_academy_content(self):
         items = [
@@ -298,6 +314,67 @@ class TestPipeline(unittest.TestCase):
         ranked = deduplicate_and_rank(items, ["OpenAI", "Codex"], limit=10)
         self.assertEqual(ranked[0].url, "https://example.com/codex")
 
+    def test_deduplicate_and_rank_promotes_high_impact_security_item_within_provider(self):
+        items = [
+            {
+                "title": "Anthropic and NEC collaborate to build Japan AI workforce",
+                "url": "https://example.com/anthropic-nec",
+                "desc": "Enterprise partnership announcement.",
+                "source_name": "Anthropic News",
+                "source_type": "official_news",
+                "published_at": "2026-04-24T00:00:00Z",
+            },
+            {
+                "title": "Claude Mythos Preview found high-severity zero-day vulnerabilities",
+                "url": "https://example.com/mythos",
+                "desc": "Project Glasswing gives defenders access to a frontier cybersecurity model.",
+                "source_name": "Anthropic Project Glasswing",
+                "source_type": "official_news",
+                "published_at": "2026-04-07T00:00:00Z",
+            },
+        ]
+
+        ranked = deduplicate_and_rank(items, ["Claude", "Mythos", "Glasswing", "Anthropic"], limit=10)
+        self.assertEqual(ranked[0].url, "https://example.com/mythos")
+
+    def test_deduplicate_and_rank_collapses_openai_release_family_system_card(self):
+        items = [
+            {
+                "title": "[Official] Introducing GPT-5.5",
+                "url": "https://openai.com/index/introducing-gpt-5-5",
+                "desc": "Introducing GPT-5.5, our smartest model yet.",
+                "source_name": "OpenAI News RSS",
+                "source_type": "official_news",
+                "published_at": "2026-04-23T11:00:00Z",
+            },
+            {
+                "title": "[Official] GPT-5.5 System Card",
+                "url": "https://openai.com/index/gpt-5-5-system-card",
+                "desc": "Safety evaluations and deployment notes for GPT-5.5.",
+                "source_name": "OpenAI News RSS",
+                "source_type": "official_news",
+                "published_at": "2026-04-23T11:00:00Z",
+            },
+        ]
+
+        ranked = deduplicate_and_rank(items, ["OpenAI", "GPT"], limit=10)
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0].url, "https://openai.com/index/introducing-gpt-5-5")
+
+    def test_content_dedupe_key_uses_url_for_short_distinct_titles(self):
+        capex_key = content_dedupe_key(
+            title="Tesla 增加資本支出",
+            url="https://techcrunch.com/tesla-capex",
+            source_name="TechCrunch",
+        )
+        earnings_key = content_dedupe_key(
+            title="Tesla財報公佈",
+            url="https://techcrunch.com/tesla-earnings",
+            source_name="TechCrunch",
+        )
+
+        self.assertNotEqual(capex_key, earnings_key)
+
 
 class _MockResponse:
     def __init__(self, json_data=None, text="", status_code=200):
@@ -311,6 +388,56 @@ class _MockResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class TestNewsCollector(unittest.TestCase):
+    def test_ai_news_queries_include_high_impact_security_terms(self):
+        collector = NewsCollector()
+        captured_keywords: list[str] = []
+
+        def fake_fetch(keywords, **kwargs):
+            captured_keywords.extend(keywords)
+            return []
+
+        with patch.object(collector, "_fetch_by_keywords", side_effect=fake_fetch):
+            collector.fetch_ai_tech_news()
+
+        normalized = " ".join(captured_keywords).lower()
+        self.assertIn("claude mythos", normalized)
+        self.assertIn("project glasswing", normalized)
+        self.assertIn("zero-day", normalized)
+        self.assertIn("unauthorized access", normalized)
+
+    def test_ai_news_queries_are_split_under_newsapi_q_limit(self):
+        collector = NewsCollector()
+        queries: list[str] = []
+
+        def fake_fetch(keywords, **kwargs):
+            queries.append(collector._build_query(keywords))
+            return []
+
+        with patch.object(collector, "_fetch_by_keywords", side_effect=fake_fetch):
+            collector.fetch_ai_tech_news()
+
+        self.assertGreater(len(queries), 2)
+        self.assertTrue(all(len(query) <= collector._NEWSAPI_Q_BUDGET_CHARS for query in queries))
+
+    @patch("src.collectors.news_collector.requests.get")
+    def test_fetch_by_keywords_rejects_oversized_query_before_request(self, mock_get):
+        collector = NewsCollector()
+        collector.api_key = "test-key"
+        long_keywords = [f"keyword-{index:03d}-with-extra-text" for index in range(30)]
+
+        result = collector._fetch_by_keywords(
+            long_keywords,
+            domains="example.com",
+            page_size=10,
+            days_back=7,
+            source_type="news",
+        )
+
+        self.assertEqual(result, [])
+        mock_get.assert_not_called()
 
 
 class TestOfficialCollector(unittest.TestCase):
@@ -356,6 +483,21 @@ class TestOfficialCollector(unittest.TestCase):
 
         called_urls = [call.kwargs["url"] for call in mock_feed.call_args_list]
         self.assertIn("https://openai.com/news/rss.xml", called_urls)
+
+    def test_static_official_pages_include_project_glasswing_and_red_team_mythos(self):
+        collector = OfficialAICollector()
+
+        def fake_fetch(url, *, source_name):
+            if "red.anthropic.com" in url:
+                return "<html>Claude Mythos vulnerability cybersecurity red team assessment</html>"
+            return "<html>Project Glasswing Claude Mythos zero-day cybersecurity announcement</html>"
+
+        with patch.object(collector, "_fetch_page_text", side_effect=fake_fetch):
+            items = collector._fetch_static_official_pages()
+
+        urls = {item["url"] for item in items}
+        self.assertIn("https://www.anthropic.com/glasswing", urls)
+        self.assertIn("https://red.anthropic.com/2026/mythos-preview/", urls)
 
     def test_extract_docs_release_notes_parses_dated_sections(self):
         html = """

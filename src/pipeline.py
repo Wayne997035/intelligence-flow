@@ -32,6 +32,40 @@ _CORE_PROVIDER_TERMS = (
     "xai",
     "grok",
 )
+_HIGH_IMPACT_AI_TERMS = (
+    "mythos",
+    "glasswing",
+    "zero-day",
+    "zero day",
+    "unauthorized access",
+    "data leak",
+    "breach",
+    "vulnerability",
+    "cybersecurity",
+)
+_AI_INCIDENT_TERMS = (
+    "unauthorized access",
+    "hack",
+    "hacked",
+    "breach",
+    "compromise",
+    "data leak",
+    "leak",
+    "jailbreak",
+    "vulnerability",
+    "zero-day",
+    "zero day",
+)
+_AI_INCIDENT_CONTEXT_TERMS = (
+    "security",
+    "cybersecurity",
+    "model",
+    "preview",
+    "frontier",
+    "api",
+    "agent",
+    "release",
+)
 
 
 def normalize_text(value: str | None) -> str:
@@ -65,6 +99,40 @@ def canonicalize_url(url: str | None) -> str:
 def infer_tags(text: str, priority_keywords: list[str]) -> list[str]:
     content = normalize_text(text).lower()
     return [keyword for keyword in priority_keywords if keyword.lower() in content]
+
+
+def content_dedupe_key(
+    *,
+    title: str | None,
+    url: str | None,
+    source_name: str | None = None,
+    summary: str | None = None,
+    desc: str | None = None,
+) -> str:
+    normalized_title = normalize_text(title)
+    canonical_url = canonicalize_url(url)
+    haystack = " ".join(
+        [
+            normalized_title,
+            normalize_text(source_name),
+            normalize_text(summary),
+            normalize_text(desc),
+            canonical_url,
+        ]
+    ).lower()
+
+    openai_model_match = re.search(r"\bgpt[- ](\d+(?:\.\d+)?)\b", haystack)
+    if openai_model_match and ("openai" in haystack or "openai.com" in canonical_url):
+        return f"release-family:openai-gpt-{openai_model_match.group(1)}"
+
+    title_key = re.sub(r"[^a-z0-9]+", "", normalized_title.lower())[:120]
+    if title_key and len(title_key) >= 24:
+        return f"title:{title_key}"
+    if canonical_url:
+        return f"url:{canonical_url}"
+    if title_key:
+        return f"title:{title_key}"
+    return ""
 
 
 def normalize_item(
@@ -146,11 +214,16 @@ def is_low_signal_item(item: IntelligenceItem) -> bool:
             if family_match:
                 item.metadata.setdefault("model_family_key", f"gemma-4-{family_match.group(1)}")
 
+    openai_model_match = re.search(r"\bgpt[- ](\d+(?:\.\d+)?)\b", lowered)
+    if openai_model_match and ("openai" in source_name or "openai.com" in url):
+        item.metadata.setdefault("release_family_key", f"openai-gpt-{openai_model_match.group(1)}")
+
     return False
 
 
 def is_relevant_ai_item(item: IntelligenceItem) -> bool:
     text = f"{normalize_text(item.title)} {normalize_text(item.desc)}".lower()
+    has_core_provider = any(keyword in text for keyword in _CORE_PROVIDER_TERMS)
     positive_keywords = [
         "model",
         "release",
@@ -199,7 +272,10 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
         "war",
         "department of war",
     ]
-
+    if has_core_provider and any(keyword in text for keyword in _AI_INCIDENT_TERMS) and any(
+        keyword in text for keyword in _AI_INCIDENT_CONTEXT_TERMS
+    ):
+        return True
     if any(keyword in text for keyword in negative_keywords):
         return False
     if item.source_type in {"official_news", "model_release", "research", "github_release", "github_repo"}:
@@ -207,6 +283,29 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
     if item.source_type == "community" and item.metadata.get("recent_feature_signal"):
         return True
     return any(keyword in text for keyword in positive_keywords)
+
+
+def ai_impact_score(item: IntelligenceItem) -> int:
+    text = " ".join(
+        [
+            normalize_text(item.title),
+            normalize_text(item.desc),
+            normalize_text(item.source_name),
+            canonicalize_url(item.url),
+        ]
+    ).lower()
+    has_core_provider = any(keyword in text for keyword in _CORE_PROVIDER_TERMS)
+    score = 0
+
+    if "mythos" in text or "glasswing" in text:
+        score += 80
+    if has_core_provider and any(keyword in text for keyword in _HIGH_IMPACT_AI_TERMS):
+        score += 35
+    if has_core_provider and any(keyword in text for keyword in _AI_INCIDENT_TERMS):
+        score += 30
+    if item.source_type in {"official_news", "research"} and score:
+        score += 10
+    return score
 
 
 def deduplicate_and_rank(
@@ -235,10 +334,18 @@ def deduplicate_and_rank(
             continue
 
         title_key = re.sub(r"[^a-z0-9]+", "", normalized.title.lower())[:96]
-        dedupe_key = normalized.url
+        dedupe_key = content_dedupe_key(
+            title=normalized.title,
+            url=normalized.url,
+            source_name=normalized.source_name,
+            desc=normalized.desc,
+        )
         family_key = normalized.metadata.get("model_family_key")
+        release_family_key = normalized.metadata.get("release_family_key")
         if family_key:
             dedupe_key = f"model-family:{family_key}"
+        if release_family_key:
+            dedupe_key = f"release-family:{release_family_key}"
         if title_key and len(title_key) >= 24:
             dedupe_key = title_index.get(title_key, dedupe_key)
 
@@ -275,6 +382,7 @@ def deduplicate_and_rank(
         key=lambda item: (
             item.priority,
             _provider_priority(item),
+            -ai_impact_score(item),
             -source_quality_score(item),
             -_published_timestamp(item),
             order_index.get(reverse_order_index.get(id(item), ""), 10**9),
@@ -356,6 +464,11 @@ def _should_replace(existing: IntelligenceItem | None, candidate: IntelligenceIt
     if existing is None:
         return True
 
+    existing_release_rank = _release_item_rank(existing)
+    candidate_release_rank = _release_item_rank(candidate)
+    if candidate_release_rank != existing_release_rank:
+        return candidate_release_rank < existing_release_rank
+
     existing_score = source_quality_score(existing)
     candidate_score = source_quality_score(candidate)
     if candidate_score != existing_score:
@@ -365,3 +478,12 @@ def _should_replace(existing: IntelligenceItem | None, candidate: IntelligenceIt
         return len(candidate.desc) > len(existing.desc)
 
     return (candidate.published_at or "") > (existing.published_at or "")
+
+
+def _release_item_rank(item: IntelligenceItem) -> int:
+    title = normalize_text(item.title).lower()
+    if "system card" in title:
+        return 3
+    if title.startswith("[official] introducing ") or title.startswith("introducing "):
+        return 0
+    return 1

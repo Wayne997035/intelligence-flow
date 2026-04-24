@@ -70,7 +70,7 @@ class OfficialAICollector:
             {
                 "name": "Anthropic News",
                 "url": "https://www.anthropic.com/news",
-                "link_prefixes": ["/news/"],
+                "link_prefixes": ["/news/", "/glasswing", "/project/glasswing"],
                 "limit": 8,
                 "keywords": [
                     "claude",
@@ -79,6 +79,10 @@ class OfficialAICollector:
                     "agent",
                     "managed agents",
                     "api",
+                    "mythos",
+                    "glasswing",
+                    "cybersecurity",
+                    "zero-day",
                 ],
             },
             {
@@ -106,6 +110,30 @@ class OfficialAICollector:
                     "gemma",
                     "google ai",
                 ],
+            },
+        ]
+        self.static_sources = [
+            {
+                "name": "Anthropic Project Glasswing",
+                "url": "https://www.anthropic.com/glasswing",
+                "title": "Project Glasswing: Securing critical software for the AI era",
+                "desc": (
+                    "Anthropic announced Project Glasswing, giving selected defenders access to "
+                    "Claude Mythos Preview after it identified high-severity zero-day vulnerabilities."
+                ),
+                "published_at": "2026-04-07T00:00:00+00:00",
+                "keywords": ["project glasswing", "claude mythos", "zero-day", "cybersecurity"],
+            },
+            {
+                "name": "Anthropic Red Team",
+                "url": "https://red.anthropic.com/2026/mythos-preview/",
+                "title": "Assessing Claude Mythos Preview's cybersecurity capabilities",
+                "desc": (
+                    "Anthropic's Frontier Red Team published technical details on Claude Mythos "
+                    "Preview's vulnerability discovery, exploitation, and patching capabilities."
+                ),
+                "published_at": "2026-04-07T00:00:00+00:00",
+                "keywords": ["claude mythos", "vulnerability", "cybersecurity", "red team"],
             },
         ]
         self.docs_sources = [
@@ -175,6 +203,7 @@ class OfficialAICollector:
         return (
             self._fetch_feed_updates(limit_per_source)
             + self._fetch_html_updates(limit_per_source)
+            + self._fetch_static_official_pages()
             + self._fetch_claude_platform_release_notes(limit_per_source)
             + self._fetch_docs_release_notes(limit_per_source)
         )
@@ -416,6 +445,30 @@ class OfficialAICollector:
             )
         return results
 
+    def _fetch_static_official_pages(self) -> list[dict]:
+        results: list[dict] = []
+        for source in self.static_sources:
+            try:
+                html = self._fetch_page_text(source["url"], source_name=source["name"])
+            except Exception as exc:  # pragma: no cover - live source failures
+                logger.warning("Static official AI page fetch failed for %s: %s", source["name"], exc)
+                continue
+
+            text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+            if not self._matches_keywords(source["title"], text[:2000], source["keywords"]):
+                continue
+            results.append(
+                {
+                    "title": f"[Official] {source['title']}",
+                    "url": source["url"],
+                    "desc": source["desc"],
+                    "source_name": source["name"],
+                    "source_type": "official_news",
+                    "published_at": source["published_at"],
+                }
+            )
+        return results
+
     def _fetch_page_text(self, url: str, *, source_name: str) -> str:
         headers = self._build_browser_headers(url, include_brotli=False)
         try:
@@ -470,6 +523,8 @@ class OfficialAICollector:
             return "https://platform.claude.com/"
         if "blog.google" in url:
             return "https://blog.google/"
+        if "red.anthropic.com" in url:
+            return "https://red.anthropic.com/"
         if "anthropic.com" in url:
             return "https://www.anthropic.com/"
         return url

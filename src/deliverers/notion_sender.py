@@ -7,6 +7,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from src.config import Config
 from src.models import AnalyzedReport
+from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
 
 try:
@@ -296,7 +297,23 @@ class NotionSender:
             )
 
         appendix_items.sort(key=self._render_item_sort_key)
-        return primary_items + appendix_items
+        return self._dedupe_render_items(primary_items + appendix_items)
+
+    def _dedupe_render_items(self, items: list[dict]) -> list[dict]:
+        deduped: list[dict] = []
+        seen_keys: set[str] = set()
+        for item in items:
+            key = content_dedupe_key(
+                title=str(item.get("title", "")),
+                url=str(item.get("url", "")),
+                source_name=str(item.get("source_name", "")),
+                summary=str(item.get("summary", "")),
+            )
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(item)
+        return deduped
 
     def _render_item_sort_key(self, item: dict) -> tuple[int, int, int, float]:
         source_type = str(item.get("source_type", "")).strip().lower()

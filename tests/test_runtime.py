@@ -1,10 +1,44 @@
 import unittest
+from argparse import Namespace
 
-from main import validate_runtime
+from main import resolve_runtime_options, validate_runtime
 from src.config import Config
 
 
 class TestRuntimeValidation(unittest.TestCase):
+    def test_resolve_runtime_options_uses_config_defaults(self):
+        original_dry_run = Config.DRY_RUN
+        original_ai = Config.ENABLE_AI_ANALYSIS
+        original_fixture = Config.USE_FIXTURE_DATA
+        try:
+            Config.DRY_RUN = True
+            Config.ENABLE_AI_ANALYSIS = True
+            Config.USE_FIXTURE_DATA = False
+
+            dry_run, use_fixture, enable_ai = resolve_runtime_options(
+                Namespace(live_delivery=False, use_fixture=False, enable_ai=False)
+            )
+
+            self.assertTrue(dry_run)
+            self.assertFalse(use_fixture)
+            self.assertTrue(enable_ai)
+        finally:
+            Config.DRY_RUN = original_dry_run
+            Config.ENABLE_AI_ANALYSIS = original_ai
+            Config.USE_FIXTURE_DATA = original_fixture
+
+    def test_resolve_runtime_options_live_delivery_overrides_dry_run(self):
+        original_dry_run = Config.DRY_RUN
+        try:
+            Config.DRY_RUN = True
+            dry_run, _, _ = resolve_runtime_options(
+                Namespace(live_delivery=True, use_fixture=False, enable_ai=False)
+            )
+
+            self.assertFalse(dry_run)
+        finally:
+            Config.DRY_RUN = original_dry_run
+
     def test_validate_runtime_requires_ai_key_when_ai_enabled(self):
         original_gemini = Config.GEMINI_API_KEY
         original_groq = Config.GROQ_API_KEY

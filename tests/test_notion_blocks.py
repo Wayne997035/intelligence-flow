@@ -222,6 +222,86 @@ class TestDeliverers(unittest.TestCase):
         self.assertEqual(ordered_titles[:4], ["測試標題1", "測試標題2", "測試標題3", "測試標題4"])
         self.assertEqual(ordered_titles[4:], ["[Official] Gemini notebooks", "[GitHub] repo"])
 
+    def test_notion_dedupes_primary_and_appendix_but_keeps_primary_item(self):
+        sender = NotionSender(dry_run=True)
+        report = AnalyzedReport(
+            title="AI",
+            summary="summary",
+            items=[
+                ReportItem(
+                    title="[Official] Introducing GPT-5.5",
+                    url="https://openai.com/index/introducing-gpt-5-5",
+                    summary="Introducing GPT-5.5.",
+                    insight="primary",
+                    source_name="OpenAI News RSS",
+                    source_type="official_news",
+                    published_at="2026-04-23T11:00:00Z",
+                )
+            ],
+            outlook="outlook",
+            outlook_label="label",
+            metadata={
+                "appendix_items": [
+                    {
+                        "title": "[Official] GPT-5.5 System Card",
+                        "url": "https://openai.com/index/gpt-5-5-system-card",
+                        "summary": "Safety evaluations for GPT-5.5.",
+                        "insight": "appendix",
+                        "source_name": "OpenAI News RSS",
+                        "source_type": "official_news",
+                        "published_at": "2026-04-23T11:00:00Z",
+                    },
+                    {
+                        "title": "[Official] Memory for Claude Managed Agents",
+                        "url": "https://platform.claude.com/docs/en/managed-agents/memory",
+                        "summary": "Claude Managed Agents memory beta.",
+                        "insight": "appendix",
+                        "source_name": "Claude Platform Release Notes",
+                        "source_type": "official_news",
+                        "published_at": "2026-04-23T00:00:00Z",
+                    },
+                ]
+            },
+        )
+
+        ordered_titles = [item["title"] for item in sender._sorted_render_items(report)]
+        self.assertEqual(ordered_titles.count("[Official] Introducing GPT-5.5"), 1)
+        self.assertNotIn("[Official] GPT-5.5 System Card", ordered_titles)
+        self.assertIn("[Official] Memory for Claude Managed Agents", ordered_titles)
+
+    def test_notion_keeps_short_distinct_stock_titles_with_different_urls(self):
+        sender = NotionSender(dry_run=True)
+        report = AnalyzedReport(
+            title="Stock",
+            summary="summary",
+            items=[
+                ReportItem(
+                    title="Tesla 增加資本支出",
+                    url="https://techcrunch.com/tesla-capex",
+                    summary="Tesla increased capex.",
+                    insight="capex",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-22T00:00:00Z",
+                ),
+                ReportItem(
+                    title="Tesla財報公佈",
+                    url="https://techcrunch.com/tesla-earnings",
+                    summary="Tesla reported Q1 revenue.",
+                    insight="earnings",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-22T01:00:00Z",
+                ),
+            ],
+            outlook="outlook",
+            outlook_label="label",
+        )
+
+        ordered_titles = [item["title"] for item in sender._sorted_render_items(report)]
+        self.assertIn("Tesla 增加資本支出", ordered_titles)
+        self.assertIn("Tesla財報公佈", ordered_titles)
+
     def test_notion_appendix_cleans_html_noise(self):
         sender = NotionSender(dry_run=True)
         report = build_report()
@@ -276,6 +356,51 @@ class TestDeliverers(unittest.TestCase):
         self.assertIn("這是未來展望\n\n📎 其餘 1 則延伸內容與來源細節請看 Notion", description)
         self.assertIn("其餘 1 則延伸內容與來源細節請看 Notion", description)
         self.assertNotIn("測試標題4", description)
+
+    def test_discord_payload_dedupes_release_family_inside_top_items(self):
+        sender = DiscordSender(dry_run=True)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="summary",
+            items=[
+                ReportItem(
+                    title="[Official] Introducing GPT-5.5",
+                    url="https://openai.com/index/introducing-gpt-5-5",
+                    summary="Introducing GPT-5.5.",
+                    insight="primary",
+                    source_name="OpenAI News RSS",
+                    source_type="official_news",
+                    published_at="2026-04-23T11:00:00Z",
+                ),
+                ReportItem(
+                    title="[Official] GPT-5.5 System Card",
+                    url="https://openai.com/index/gpt-5-5-system-card",
+                    summary="Safety evaluations for GPT-5.5.",
+                    insight="duplicate",
+                    source_name="OpenAI News RSS",
+                    source_type="official_news",
+                    published_at="2026-04-23T11:00:00Z",
+                ),
+                ReportItem(
+                    title="[Official] Memory for Claude Managed Agents",
+                    url="https://platform.claude.com/docs/en/managed-agents/memory",
+                    summary="Claude memory beta.",
+                    insight="distinct",
+                    source_name="Claude Platform Release Notes",
+                    source_type="official_news",
+                    published_at="2026-04-23T00:00:00Z",
+                ),
+            ],
+            outlook="outlook",
+            outlook_label="label",
+        )
+
+        payload = sender.send_ai_tech_report(report, notion_url=None)
+        description = payload["embeds"][0]["description"]
+        self.assertEqual(description.count("GPT-5.5"), 2)
+        self.assertIn("Introducing GPT-5.5", description)
+        self.assertNotIn("GPT-5.5 System Card", description)
+        self.assertIn("Memory for Claude Managed Agents", description)
 
     def test_discord_stock_payload_formats_us_and_tw_differently(self):
         sender = DiscordSender(dry_run=True)
@@ -489,6 +614,100 @@ class TestDeliverers(unittest.TestCase):
             item["url"] for item in result["ai_report"].metadata.get("appendix_items", [])
         }
         self.assertIn("https://example.com/notebooks", appendix_urls)
+
+    @patch("main.select_ai_report_candidates")
+    @patch("main.RunStateStore")
+    @patch("main.DiscordSender")
+    @patch("main.NotionSender")
+    @patch("main.AIAnalyzer")
+    def test_build_reports_ai_appendix_keeps_older_high_impact_mythos_item(
+        self,
+        mock_analyzer_cls,
+        mock_notion_cls,
+        mock_discord_cls,
+        mock_state_store_cls,
+        mock_select_candidates,
+    ):
+        selected_item = {
+            "title": "[Official] OpenAI ships a new Responses API update",
+            "url": "https://example.com/openai",
+            "desc": "Responses API adds a new tool",
+            "source_name": "OpenAI API Changelog",
+            "source_type": "official_news",
+            "published_at": "2026-04-24T00:00:00Z",
+        }
+        older_mythos_item = {
+            "title": "Anthropic investigates unauthorized access to Claude Mythos Preview",
+            "url": "https://example.com/claude-mythos-breach",
+            "desc": "Project Glasswing frontier cybersecurity model access may have been exposed.",
+            "source_name": "CBS News",
+            "source_type": "news",
+            "published_at": "2026-04-07T00:00:00Z",
+        }
+
+        mock_select_candidates.side_effect = lambda items, limit: items[:1]
+
+        analyzer = mock_analyzer_cls.return_value
+        analyzer.analyze_stock_market.return_value = AnalyzedReport(
+            title="Stock",
+            summary="stock summary",
+            items=[],
+            outlook="stock outlook",
+            outlook_label="outlook",
+        )
+        analyzer.analyze_ai_tech.return_value = AnalyzedReport(
+            title="AI",
+            summary="ai summary",
+            items=[
+                ReportItem(
+                    title=selected_item["title"],
+                    url=selected_item["url"],
+                    summary=selected_item["desc"],
+                    insight="selected",
+                    source_name=selected_item["source_name"],
+                    source_type=selected_item["source_type"],
+                    published_at=selected_item["published_at"],
+                )
+            ],
+            outlook="ai outlook",
+            outlook_label="outlook",
+        )
+        analyzer.build_ai_brief_item.side_effect = lambda item: {
+            "title": item["title"] if isinstance(item, dict) else item.title,
+            "url": item["url"] if isinstance(item, dict) else item.url,
+            "summary": item["desc"] if isinstance(item, dict) else item.desc,
+            "insight": "",
+            "source_name": item["source_name"] if isinstance(item, dict) else item.source_name,
+            "source_type": item["source_type"] if isinstance(item, dict) else item.source_type,
+            "published_at": item["published_at"] if isinstance(item, dict) else item.published_at,
+        }
+
+        mock_notion_cls.return_value.create_stock_insight_report.return_value = None
+        mock_notion_cls.return_value.create_ai_tech_report.return_value = None
+        mock_discord_cls.return_value.send_stock_and_analysis.return_value = {}
+        mock_discord_cls.return_value.send_ai_tech_report.return_value = {}
+
+        state_store = mock_state_store_cls.return_value
+        state_store.filter_new_items.side_effect = lambda category, items, limit: (items[:limit], 0)
+
+        result = build_reports(
+            {
+                "us_stocks": [],
+                "tw_stocks": [],
+                "stock_news": [],
+                "ai_news": [selected_item, older_mythos_item],
+            },
+            enable_ai=False,
+            dry_run=True,
+            now=datetime(2026, 4, 24, 0, 0, 0, tzinfo=timezone.utc),
+        )
+
+        report_urls = {item["url"] for item in result["ai_items"]}
+        appendix_urls = {
+            item["url"] for item in result["ai_report"].metadata.get("appendix_items", [])
+        }
+        self.assertNotIn("https://example.com/claude-mythos-breach", report_urls)
+        self.assertIn("https://example.com/claude-mythos-breach", appendix_urls)
 
     @patch("main.select_ai_report_candidates")
     @patch("main.RunStateStore")

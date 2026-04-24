@@ -36,7 +36,7 @@ touch .env.local
 先跑測試：
 
 ```bash
-./venv/bin/python -m unittest discover -s tests
+./venv/bin/python -m pytest
 ```
 
 本地 fixture 驗證（不打外部來源）：
@@ -54,8 +54,19 @@ touch .env.local
 正式發送（Discord + Notion）：
 
 ```bash
-./venv/bin/python main.py --once --live-delivery --enable-ai
+./venv/bin/python main.py --once --live-delivery
 ```
+
+`main.py` 以環境設定為預設值：`ENABLE_AI_ANALYSIS=true` 會啟用 Gemini/Groq 摘要，`DRY_RUN=true` 會阻止 Discord/Notion 實際發送。CLI 旗標只用於本次執行覆寫，例如 `--live-delivery` 會把本次執行切到正式發送。
+
+## 排程
+
+GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
+
+- Asia/Taipei 10:30 daily
+- Asia/Taipei 20:00 daily
+
+排程使用 GitHub Actions `schedule.timezone`，時區設定為 `Asia/Taipei`。
 
 ## 設定重點
 
@@ -71,8 +82,10 @@ touch .env.local
 | `ENABLE_AI_ANALYSIS` | 是否啟用 AI 產生摘要/洞察 |
 | `ENABLE_DISCORD_DELIVERY` | 是否發送到 Discord |
 | `ENABLE_NOTION_DELIVERY` | 是否發送到 Notion |
+| `DRY_RUN` | 是否阻止外部發送（預設 `true`） |
 | `STOCK_NEWS_LOOKBACK_DAYS` | 股市新聞時間窗（預設 7） |
 | `AI_NEWS_LOOKBACK_DAYS` | AI 新聞時間窗（預設 7） |
+| `AI_HIGH_IMPACT_LOOKBACK_DAYS` | AI 高衝擊延伸內容時間窗（預設 30） |
 | `ENABLE_HISTORY_DEDUP` | 跨輪去重（預設關閉） |
 | `US_STOCKS` / `TW_STOCKS` | 追蹤標的 |
 | `TW_STOCK_SOURCE_ORDER` | 台股來源順序（預設 `yfinance,mis`） |
@@ -81,6 +94,8 @@ touch .env.local
 
 - 優先關注主流模型與平台脈絡：Claude / Gemini / xAI / Grok / Codex / ChatGPT
 - 同時追蹤「新功能演進」：agent、skill、workflow、tooling 類訊號
+- 重大 AI 資安事件（例如 frontier model、zero-day、breach、Mythos / Glasswing 類事件）可在主報時間窗外保留到 Notion 延伸內容
+- Discord 與 Notion 各自會做內容去重；Notion 仍會包含 Discord 主報項目，但不會在 Notion 內重複渲染同一事件
 - 社群熱度不是主排序，但會保留近期高討論度與 GitHub 趨勢專案
 
 ## 輸出檔案

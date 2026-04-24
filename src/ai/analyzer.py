@@ -16,8 +16,10 @@ from src.utils.logger import logger
 
 try:
     from google import genai
+    from google.genai import types as genai_types
 except ImportError:  # pragma: no cover - optional dependency in dry-run
     genai = None
+    genai_types = None
 
 try:
     from groq import Groq
@@ -47,6 +49,30 @@ class AIAnalyzer:
         "news": 5,
         "community": 6,
         "unknown": 9,
+    }
+    _REPORT_RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "insight": {"type": "string"},
+                        "source_name": {"type": "string"},
+                        "source_type": {"type": "string"},
+                        "published_at": {"type": "string"},
+                    },
+                    "required": ["title", "url", "summary", "insight"],
+                },
+            },
+            "outlook": {"type": "string"},
+        },
+        "required": ["summary", "items", "outlook"],
     }
 
     def __init__(self, enable_ai: bool | None = None):
@@ -186,7 +212,7 @@ class AIAnalyzer:
 
         headline = self._normalize_brief_title(title)
         summary = self._summarize_brief_item(headline, desc, source_type)
-        insight = self._summarize_brief_insight(headline, source_name, source_type)
+        insight = self._summarize_brief_insight(headline, desc, source_name, source_type)
         return {
             "title": title,
             "url": url,
@@ -679,10 +705,18 @@ class AIAnalyzer:
 
     def _summarize_brief_item(self, headline: str, desc: str, source_type: str) -> str:
         details = normalize_text(desc)
+        headline_lower = headline.lower()
         if source_type == "github_repo":
             return f"GitHub 熱門專案，聚焦 {headline}。"
         if source_type == "github_release":
             return f"GitHub Release 更新重點：{headline}。"
+        if "mythos" in headline_lower or "glasswing" in headline_lower:
+            return (
+                "Anthropic 的 Claude Mythos Preview / Project Glasswing 指向高風險 AI 資安能力："
+                "模型可協助找出與修補重大漏洞，但也提高攻擊自動化外溢風險。"
+            )
+        if any(keyword in headline_lower for keyword in ("nec", "workforce", "collaborate")) and "anthropic" in headline_lower:
+            return "Anthropic 與 NEC 宣布合作，重點是擴大日本企業導入 AI 工程與人才培訓能力。"
         if source_type == "model_release":
             task_match = re.search(r"Task:\s*([^|]+)", details, flags=re.IGNORECASE)
             downloads_match = re.search(r"Downloads:\s*([0-9,]+)", details, flags=re.IGNORECASE)
@@ -702,12 +736,25 @@ class AIAnalyzer:
             if not sentence.endswith(("。", ".", "!", "?")):
                 sentence += "。"
             return sentence
+        if source_type == "official_news":
+            return f"官方公告重點：{headline}。"
         return f"近期值得追蹤的更新：{headline}。"
 
-    def _summarize_brief_insight(self, headline: str, source_name: str, source_type: str) -> str:
+    def _summarize_brief_insight(self, headline: str, desc: str, source_name: str, source_type: str) -> str:
         headline_lower = headline.lower()
+        detail_lower = normalize_text(desc).lower()
         provider = self._brief_provider_label(source_name, headline)
 
+        if "mythos" in headline_lower or "glasswing" in headline_lower:
+            return (
+                "這是 frontier model 能力邊界與資安治理同時升級的訊號，重點不只是新模型，而是 AI 已能在漏洞發現、利用與修補流程中接近專家級表現。"
+                " 後續要追 Anthropic 的存取控管、第三方測試結果、各大軟體維護者修補進度，以及是否出現未授權使用或外洩事件。"
+            )
+        if any(keyword in f"{headline_lower} {detail_lower}" for keyword in ("unauthorized access", "breach", "data leak")) and provider == "Anthropic":
+            return (
+                "這類事件會直接檢驗高能力模型的存取控管是否跟得上產品宣稱，尤其當模型本身具備資安攻防能力時，外洩風險會被放大。"
+                " 接下來要看 Anthropic 是否揭露影響範圍、供應商環境問題、稽核結果與後續安全補強。"
+            )
         if "advisor" in headline_lower:
             return (
                 f"{provider} 正在把規劃與執行拆成雙模型協作，"
@@ -746,7 +793,9 @@ class AIAnalyzer:
 
         source_label = source_name or source_type or "來源"
         if source_type == "official_news":
-            return f"{source_label} 的這則更新屬於主線產品動態，適合放進本輪重點追蹤。"
+            return (
+                f"{source_label} 這則官方更新的核心是「{headline}」，重點在它是否改變模型能力、開發者工具或企業導入路徑。"
+            )
         if source_type == "news":
             return f"這則媒體報導可作為 {provider} 官方動向的外部驗證，適合搭配原始公告一起判讀。"
         if source_type == "model_release":
@@ -774,6 +823,8 @@ class AIAnalyzer:
                 "若後續文件、SDK 與部署路徑也同步補齊，通常代表這波更新會從單點公告進一步外溢成開發者工作流的主線能力。"
             )
         if item.source_type == "official_news":
+            if any(keyword in headline_lower for keyword in ("mythos", "glasswing", "cybersecurity", "zero-day", "breach")):
+                return "後續可觀察模型存取政策、漏洞揭露節奏與主要合作夥伴的修補成果，這會決定它是防禦工具突破還是資安治理壓力測試。"
             return f"接下來可觀察 {provider} 是否同步擴充 API、定價或企業功能，這會決定它是短期宣傳還是長線產品推進。"
         if item.source_type == "model_release":
             return "後續值得比較的是推理成本、部署門檻與任務定位，這三者通常比單次 benchmark 更能決定採用速度。"
@@ -834,9 +885,18 @@ class AIAnalyzer:
             try:
                 signal.signal(signal.SIGALRM, timeout_handler)
                 signal.alarm(60)
+                config = (
+                    genai_types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=self._REPORT_RESPONSE_SCHEMA,
+                    )
+                    if genai_types
+                    else None
+                )
                 response = self.gemini_client.models.generate_content(
                     model=Config.AI_MODEL,
                     contents=prompt,
+                    config=config,
                 )
                 signal.alarm(0)
                 return response.text

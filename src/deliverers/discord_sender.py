@@ -4,6 +4,7 @@ import requests
 
 from src.config import Config
 from src.models import AnalyzedReport
+from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
 
 
@@ -133,7 +134,8 @@ class DiscordSender:
         if report.summary:
             lines.append(f"📌 **摘要**\n{self._truncate_text(report.summary, 220)}")
 
-        for item in report.items[: self.DISCORD_ITEM_LIMIT]:
+        display_items = self._dedupe_report_items(report.items)
+        for item in display_items[: self.DISCORD_ITEM_LIMIT]:
             lines.append("----------------")
             lines.append(f"**[{item.title}]({item.url})**")
             if item.summary:
@@ -144,11 +146,27 @@ class DiscordSender:
         if report.outlook:
             # Keep the final conclusion substantially complete; prioritize truncating earlier snippets instead.
             lines.append(f"{report.outlook_label}\n{self._truncate_text(report.outlook, self.OUTLOOK_LIMIT)}")
-        remaining = max(len(report.items) - self.DISCORD_ITEM_LIMIT, 0)
+        remaining = max(len(display_items) - self.DISCORD_ITEM_LIMIT, 0)
         if remaining:
             lines.append("")
             lines.append(f"📎 其餘 {remaining} 則延伸內容與來源細節請看 Notion。")
         return "\n".join(lines).strip()
+
+    def _dedupe_report_items(self, items: list) -> list:
+        deduped: list = []
+        seen_keys: set[str] = set()
+        for item in items:
+            key = content_dedupe_key(
+                title=getattr(item, "title", ""),
+                url=getattr(item, "url", ""),
+                source_name=getattr(item, "source_name", ""),
+                summary=getattr(item, "summary", ""),
+            )
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(item)
+        return deduped
 
     def _build_payload(self, title: str, description: str) -> dict:
         return {
