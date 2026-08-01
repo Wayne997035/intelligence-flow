@@ -141,6 +141,43 @@ class NotionStateBackend:
             logger.warning("Failed to load state from Notion (db=%s): %s", self._database_id, exc)
             return {}
 
+    def _find_existing_page(self) -> tuple[str | None, str | None]:
+        """Look up an existing `_state` row (+ its code block) before
+        save() falls back to `pages.create`. Only called when `_page_id`
+        is None -- fresh backend instance, or a prior `load()` that
+        degraded to `{}` after a transient Notion failure (see class
+        docstring / module StateBackend contract). Without this check,
+        such a save() would blindly create a second `_state` row,
+        splitting dedup state across two pages with no warning (the bug
+        this method exists to prevent).
+
+        Degrades to `(None, None)` -- "no existing row found" -- on any
+        failure rather than raising, per the backend's no-raise contract.
+        The caller then proceeds to `pages.create` as it would have
+        before this guard existed, so a flaky confirm-query does not
+        block state persistence; it only leaves the (pre-existing, not
+        worsened) duplicate-row risk for that one save.
+        """
+        try:
+            response = self._client.data_sources.query(
+                data_source_id=self._data_source_id,
+                filter={"property": "Name", "title": {"equals": self._row_title}},
+                page_size=1,
+            )
+            results = response.get("results", [])
+            if not results:
+                return None, None
+            page_id = results[0]["id"]
+            children = self._client.blocks.children.list(block_id=page_id)
+            return page_id, self._first_code_block_id(children)
+        except Exception as exc:  # noqa: BLE001 - see load() rationale; confirm-check failures MUST NOT abort save()
+            logger.warning(
+                "Failed to check for existing Notion state row before save (db=%s): %s",
+                self._database_id,
+                exc,
+            )
+            return None, None
+
     def save(self, state: dict) -> None:
         try:
             content = json.dumps(state, ensure_ascii=False, sort_keys=True)
@@ -148,6 +185,13 @@ class NotionStateBackend:
                 {"type": "text", "text": {"content": chunk}} for chunk in _chunk_text(content)
             ]
             code_payload = {"rich_text": rich_text, "language": _LANGUAGE}
+
+            if self._page_id is None:
+                # Guard against duplicate rows (threat surface: Notion
+                # outage/rate-limit makes load() degrade to {} silently,
+                # leaving _page_id None; a later successful save() must
+                # not then create a second `_state` row).
+                self._page_id, self._code_block_id = self._find_existing_page()
 
             if self._page_id and self._code_block_id:
                 self._client.blocks.update(block_id=self._code_block_id, code=code_payload)

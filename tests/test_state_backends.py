@@ -78,6 +78,7 @@ class TestNotionStateBackendLoad(unittest.TestCase):
 class TestNotionStateBackendSave(unittest.TestCase):
     def test_save_creates_page_when_no_existing_page(self):
         client = MagicMock()
+        client.data_sources.query.return_value = {"results": []}  # confirm-check: no existing row
         client.pages.create.return_value = {"id": "page-1"}
         client.blocks.children.list.return_value = {
             "results": [{"id": "block-1", "type": "code", "code": {"rich_text": []}}]
@@ -86,6 +87,7 @@ class TestNotionStateBackendSave(unittest.TestCase):
 
         backend.save({"ai_news": []})
 
+        client.data_sources.query.assert_called_once()  # confirm-check ran before create
         client.pages.create.assert_called_once()
         kwargs = client.pages.create.call_args.kwargs
         self.assertEqual(kwargs["parent"], {"database_id": "db-1"})
@@ -94,6 +96,68 @@ class TestNotionStateBackendSave(unittest.TestCase):
         )
         self.assertEqual(backend._page_id, "page-1")
         self.assertEqual(backend._code_block_id, "block-1")
+
+    def test_save_updates_existing_row_when_page_id_unknown_but_row_exists(self):
+        """Mutation self-proof target: this is the FIRST new test added
+        for this fix. Removing the `_find_existing_page()` guard in
+        save() (i.e. reverting to the old "if _page_id is None: go
+        straight to pages.create" behaviour) makes this test fail,
+        because save() would then blindly create a duplicate `_state`
+        row instead of updating the one Notion already has."""
+        client = MagicMock()
+        client.data_sources.query.return_value = {"results": [{"id": "page-existing"}]}
+        client.blocks.children.list.return_value = {
+            "results": [{"id": "block-existing", "type": "code", "code": {"rich_text": []}}]
+        }
+        backend = NotionStateBackend(client, "db-1", "ds-1")
+        self.assertIsNone(backend._page_id)  # fresh instance, no prior load()
+
+        backend.save({"ai_news": []})
+
+        client.pages.create.assert_not_called()
+        client.blocks.update.assert_called_once()
+        kwargs = client.blocks.update.call_args.kwargs
+        self.assertEqual(kwargs["block_id"], "block-existing")
+        self.assertEqual(backend._page_id, "page-existing")
+        self.assertEqual(backend._code_block_id, "block-existing")
+
+    def test_save_creates_page_once_when_confirm_query_finds_no_existing_row(self):
+        """Dedicated regression test for the no-existing-row branch of the
+        new confirm-check (kept separate from
+        test_save_creates_page_when_no_existing_page, which predates this
+        fix and asserts the resulting page/block payload shape)."""
+        client = MagicMock()
+        client.data_sources.query.return_value = {"results": []}
+        client.pages.create.return_value = {"id": "page-new"}
+        client.blocks.children.list.return_value = {
+            "results": [{"id": "block-new", "type": "code", "code": {"rich_text": []}}]
+        }
+        backend = NotionStateBackend(client, "db-1", "ds-1")
+
+        backend.save({"ai_news": []})
+
+        client.pages.create.assert_called_once()
+
+    def test_save_confirm_query_failure_warns_and_falls_back_to_create(self):
+        client = MagicMock()
+        client.data_sources.query.side_effect = RuntimeError("notion is down")
+        client.pages.create.return_value = {"id": "page-1"}
+        client.blocks.children.list.return_value = {
+            "results": [{"id": "block-1", "type": "code", "code": {"rich_text": []}}]
+        }
+        backend = NotionStateBackend(client, "db-1", "ds-1")
+
+        with self.assertLogs(logger, level="WARNING") as captured:
+            backend.save({"ai_news": []})  # MUST NOT raise
+
+        self.assertTrue(
+            any(
+                "Failed to check for existing Notion state row before save" in line
+                for line in captured.output
+            )
+        )
+        client.pages.create.assert_called_once()
+        self.assertEqual(backend._page_id, "page-1")
 
     def test_save_updates_existing_block_in_place(self):
         client = MagicMock()
@@ -110,6 +174,7 @@ class TestNotionStateBackendSave(unittest.TestCase):
 
     def test_save_returns_and_warns_on_api_error_without_raising(self):
         client = MagicMock()
+        client.data_sources.query.return_value = {"results": []}  # confirm-check: no existing row
         client.pages.create.side_effect = RuntimeError("rate limited")
         backend = NotionStateBackend(client, "db-1", "ds-1")
 
@@ -140,6 +205,7 @@ class TestNotionStateBackendSave(unittest.TestCase):
         def fake_list(block_id, **kwargs):
             return {"results": [{"id": "block-1", "type": "code", "code": captured["code"]}]}
 
+        client.data_sources.query.return_value = {"results": []}  # confirm-check: no existing row
         client.pages.create.side_effect = fake_create
         client.blocks.children.list.side_effect = fake_list
 
