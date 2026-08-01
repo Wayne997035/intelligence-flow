@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 from src.ai.analyzer import AIAnalyzer
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
+from src.pipeline import content_dedupe_key
 
 
 class TestAnalyzer(unittest.TestCase):
@@ -303,6 +304,70 @@ class TestAnalyzer(unittest.TestCase):
         processed = analyzer._post_process_ai_report(report, [])
 
         self.assertEqual(len(processed.items), 1)
+
+    def test_post_process_ai_report_url_key_is_namespaced_from_content_key(self):
+        # Round 2 regression: url_key must not share the raw seen_keys
+        # namespace with content_dedupe_key()'s own output. content_dedupe_key
+        # can return keys shaped like "title:<alnum>" (src/pipeline.py), and
+        # "title" is itself a valid URL scheme, so
+        # canonicalize_url("title:<alnum>") echoes the string back unchanged.
+        # Before the "urlkey:" prefix, an attacker-controlled item.url could
+        # therefore land in seen_keys as the *exact* string a legitimate
+        # item's content_dedupe_key would produce, silently discarding that
+        # legitimate item as a false "duplicate" (an external-censorship
+        # primitive requiring no guessing beyond a public headline).
+        analyzer = AIAnalyzer(enable_ai=False)
+        victim_title = "Anthropic releases Claude Opus 5 with a massive new context window"
+        other_real_title = "Google ships Gemini 4 Ultra with a faster multimodal reasoning stack"
+        poisoned_url = content_dedupe_key(
+            title=victim_title,
+            url="https://anthropic.com/news/claude-opus-5",
+            source_name="Anthropic",
+            summary="launch details",
+        )
+        self.assertTrue(poisoned_url.startswith("title:"))
+
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Unrelated evil headline about a completely different topic",
+                    url=poisoned_url,
+                    summary="s0",
+                    insight="i0",
+                    source_name="Evil Corp",
+                    source_type="community",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+                ReportItem(
+                    title=victim_title,
+                    url="https://anthropic.com/news/claude-opus-5",
+                    summary="s1",
+                    insight="i1",
+                    source_name="Anthropic",
+                    source_type="official_news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title=other_real_title,
+                    url="https://blog.google/technology/ai/gemini-4-ultra",
+                    summary="s2",
+                    insight="i2",
+                    source_name="Google",
+                    source_type="official_news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+        urls = {item.url for item in processed.items}
+
+        self.assertIn("https://anthropic.com/news/claude-opus-5", urls)
+        self.assertIn("https://blog.google/technology/ai/gemini-4-ultra", urls)
 
     def test_post_process_ai_report_backfills_core_provider_coverage(self):
         analyzer = AIAnalyzer(enable_ai=False)

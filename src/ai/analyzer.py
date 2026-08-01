@@ -509,6 +509,7 @@ class AIAnalyzer:
             # Additionally lock on the canonical URL so same-URL items always
             # merge regardless of how content_dedupe_key classified the title.
             url_key = canonicalize_url(item.url)
+            url_key = f"urlkey:{url_key}" if url_key else ""
             if not key or key in seen_keys or (url_key and url_key in seen_keys):
                 continue
             seen_keys.add(key)
