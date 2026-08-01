@@ -76,6 +76,50 @@ class TestNotionStateBackendLoad(unittest.TestCase):
             any("Failed to load state from Notion" in line for line in captured.output)
         )
 
+    def test_load_partial_failure_clears_cached_ids_and_save_does_not_duplicate_block(self):
+        """Review round 2 M-1: data_sources.query succeeds (sets _page_id)
+        but the subsequent blocks.children.list() raises (e.g. 429/5xx).
+        load() MUST degrade to {} AND reset both _page_id and
+        _code_block_id to None -- leaving _page_id set but stale would let
+        a following save() skip _find_existing_page()'s duplicate-row guard
+        and append a second code block to a page that already has one.
+
+        Mutation self-proof A target: removing the `self._page_id = None;
+        self._code_block_id = None` reset from load()'s except block makes
+        this test fail -- save() would call blocks.children.append()
+        instead of routing through the confirm-check / blocks.update()
+        path.
+        """
+        client = MagicMock()
+        client.data_sources.query.side_effect = [
+            {"results": [{"id": "page-1"}]},  # load()'s query: page found
+            {"results": [{"id": "page-1"}]},  # save()'s confirm-check re-query
+        ]
+        client.blocks.children.list.side_effect = [
+            RuntimeError("429 rate limited"),  # load()'s list() call fails
+            {  # save()'s _find_existing_page() list() call succeeds
+                "results": [
+                    {"id": "block-existing", "type": "code", "code": {"rich_text": []}}
+                ]
+            },
+        ]
+        backend = NotionStateBackend(client, "db-1", "ds-1")
+
+        with self.assertLogs(logger, level="WARNING"):
+            result = backend.load()
+
+        self.assertEqual(result, {})
+        self.assertIsNone(backend._page_id)
+        self.assertIsNone(backend._code_block_id)
+
+        backend.save({"ai_news": []})
+
+        client.blocks.children.append.assert_not_called()
+        client.pages.create.assert_not_called()
+        client.blocks.update.assert_called_once()
+        kwargs = client.blocks.update.call_args.kwargs
+        self.assertEqual(kwargs["block_id"], "block-existing")
+
 
 class TestNotionStateBackendSave(unittest.TestCase):
     def test_save_creates_page_when_no_existing_page(self):
@@ -180,6 +224,39 @@ class TestNotionStateBackendSave(unittest.TestCase):
         client.blocks.children.append.assert_not_called()
         self.assertIsNone(backend._page_id)
 
+    def test_find_existing_page_returns_unknown_when_list_children_raises(self):
+        """Review round 2 N-3: `_find_existing_page`'s docstring promises a
+        three-state contract ("found" / "confirmed_absent" / "unknown") for
+        ANY confirm-check failure, but `blocks.children.list()` sat outside
+        the method's try -- a row-found-but-list-fails case would raise
+        instead of returning "unknown", violating the method's own
+        documented contract (caught only by save()'s outer except, so no
+        duplicate row resulted, but misattributed in the logs as a generic
+        save failure).
+
+        Mutation self-proof target: moving `blocks.children.list()` back
+        outside `_find_existing_page`'s try (or removing the fold-in) makes
+        this test fail -- it would raise RuntimeError instead of returning
+        ("unknown", None, None).
+        """
+        client = MagicMock()
+        client.data_sources.query.return_value = {"results": [{"id": "page-1"}]}
+        client.blocks.children.list.side_effect = RuntimeError("429 rate limited")
+        backend = NotionStateBackend(client, "db-1", "ds-1")
+
+        with self.assertLogs(logger, level="WARNING") as captured:
+            status, page_id, block_id = backend._find_existing_page()
+
+        self.assertEqual(status, "unknown")
+        self.assertIsNone(page_id)
+        self.assertIsNone(block_id)
+        self.assertTrue(
+            any(
+                "Failed to check for existing Notion state row before save" in line
+                for line in captured.output
+            )
+        )
+
     def test_save_updates_existing_block_in_place(self):
         client = MagicMock()
         backend = NotionStateBackend(client, "db-1", "ds-1")
@@ -279,6 +356,37 @@ class TestFileStateBackend(unittest.TestCase):
                 result = backend.load()
 
             self.assertEqual(result, {})
+
+    def test_load_returns_empty_and_warns_on_non_utf8_file(self):
+        """Review round 2 N-2: json.JSONDecodeError is a ValueError
+        subclass, but UnicodeDecodeError is a *different* ValueError
+        subclass -- the narrower `except (OSError, json.JSONDecodeError)`
+        tuple let it escape `_load()` uncaught (no enclosing try in
+        `RunStateStore.__init__` / `run_job`), aborting the whole run.
+
+        Mutation self-proof B target: reverting the except tuple back to
+        `(OSError, json.JSONDecodeError)` makes this test fail --
+        UnicodeDecodeError propagates out of load() instead of degrading
+        to {}.
+        """
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            # 0xff is not valid UTF-8 in any position -- guarantees
+            # UnicodeDecodeError on decode, not a truncated-multibyte edge
+            # case that some codecs might tolerate.
+            path.write_bytes(b'{"ai_news": [\xff\xff\xff]}')
+            backend = FileStateBackend(str(path))
+
+            with self.assertLogs(logger, level="WARNING") as captured:
+                result = backend.load()
+
+            self.assertEqual(result, {})
+            self.assertTrue(
+                any("Failed to load state file" in line for line in captured.output)
+            )
 
 
 class TestResolveBackend(unittest.TestCase):

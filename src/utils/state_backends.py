@@ -63,7 +63,15 @@ class FileStateBackend:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError (not just json.JSONDecodeError, which is a
+            # ValueError subclass) also catches UnicodeDecodeError -- a
+            # non-UTF-8 or truncated multi-byte state file raises
+            # UnicodeDecodeError from the `.open(encoding="utf-8")` read
+            # itself, before json.load() ever runs, and that exception is
+            # NOT a JSONDecodeError so the narrower tuple let it escape
+            # _load() -> RunStateStore.__init__ -> run_job with no
+            # enclosing try, aborting the whole run (review round 2 N-2).
             logger.warning("Failed to load state file %s: %s", self.path, exc)
             return {}
         return payload if isinstance(payload, dict) else {}
@@ -154,6 +162,18 @@ class NotionStateBackend:
             payload = json.loads(content)
             return payload if isinstance(payload, dict) else {}
         except Exception as exc:  # noqa: BLE001 - Notion outage/rate-limit/malformed response MUST degrade, never raise (decision 2026-08-01: dedup skips this run, flow continues)
+            # Reset any ids this attempt partially set (e.g. data_sources.query
+            # succeeded and set _page_id, but the subsequent
+            # blocks.children.list() call raised) so save()'s `_page_id is
+            # None` guard reliably routes back through _find_existing_page()
+            # instead of trusting a stale/partial id and appending a second
+            # code block to a page that already has one (review round 2 M-1).
+            # This matches the precondition _find_existing_page()'s docstring
+            # already documents: "_page_id is None -- fresh backend instance,
+            # or a prior load() that degraded to {} after a transient Notion
+            # failure".
+            self._page_id = None
+            self._code_block_id = None
             logger.warning(
                 "Failed to load state from Notion (db=%s...): %s", self._db_id_prefix, exc
             )
@@ -192,6 +212,21 @@ class NotionStateBackend:
                 page_size=1,
                 sorts=_SORT_OLDEST_FIRST,
             )
+            results = response.get("results", [])
+            if not results:
+                return "confirmed_absent", None, None
+            page_id = results[0]["id"]
+            # Folded into this try (review round 2 N-3): this call can also
+            # raise (network error, rate limit, malformed response), and the
+            # three-state contract documented above promises "unknown" for
+            # any confirm-check failure, not just a failed initial query.
+            # Previously this line sat outside the try, so a failure here
+            # would raise past this method's own contract and be caught only
+            # by save()'s outer except -- functionally harmless (no
+            # duplicate row) but misattributed in the logs as a generic save
+            # failure instead of "could not confirm existing row".
+            children = self._client.blocks.children.list(block_id=page_id)
+            return "found", page_id, self._first_code_block_id(children)
         except Exception as exc:  # noqa: BLE001 - see load() rationale; confirm-check failures MUST NOT abort save()
             logger.warning(
                 "Failed to check for existing Notion state row before save (db=%s...): %s",
@@ -199,13 +234,6 @@ class NotionStateBackend:
                 exc,
             )
             return "unknown", None, None
-
-        results = response.get("results", [])
-        if not results:
-            return "confirmed_absent", None, None
-        page_id = results[0]["id"]
-        children = self._client.blocks.children.list(block_id=page_id)
-        return "found", page_id, self._first_code_block_id(children)
 
     def save(self, state: dict) -> None:
         try:
