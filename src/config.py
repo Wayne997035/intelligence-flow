@@ -56,6 +56,10 @@ class Config:
     DISCORD_WEBHOOK_URL = _get_env("DISCORD_WEBHOOK_URL")
     NOTION_TOKEN = _get_env("NOTION_TOKEN") or _get_env("NOTION_INTEGRATION_SECRET")
     NOTION_PAGE_ID = _get_env("NOTION_PAGE_ID") or _get_env("NOTION_DATABASE_ID")
+    # Dedicated database for cross-run dedup state persistence (separate from
+    # NOTION_PAGE_ID, which is the report delivery destination).
+    NOTION_STATE_DB_ID = _get_env("NOTION_STATE_DB_ID")
+    NOTION_STATE_DS_ID = _get_env("NOTION_STATE_DS_ID")
 
     DRY_RUN = _get_bool("DRY_RUN", True)
     ENABLE_AI_ANALYSIS = _get_bool("ENABLE_AI_ANALYSIS", False)
@@ -71,7 +75,10 @@ class Config:
     AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
     AI_HIGH_IMPACT_LOOKBACK_DAYS = int(os.getenv("AI_HIGH_IMPACT_LOOKBACK_DAYS", "30"))
     HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
-    HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "12"))
+    # 26h covers both schedule gaps (10:30->20:00 = 9.5h, 20:00->next 10:30 =
+    # 14.5h) with buffer for a delayed run; 24h alone would let the
+    # overnight gap's dedup window lapse right at the boundary.
+    HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "26"))
     STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"
     ARTIFACT_FILE = _get_env("ARTIFACT_FILE", "data/latest_run.json") or "data/latest_run.json"
 
