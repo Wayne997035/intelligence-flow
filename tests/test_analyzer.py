@@ -263,6 +263,47 @@ class TestAnalyzer(unittest.TestCase):
         # matching the behaviour already used by discord_sender/notion_sender.
         self.assertEqual(len(processed.items), 1)
 
+    def test_post_process_ai_report_collapses_same_url_regardless_of_title(self):
+        # Regression guard: content_dedupe_key falls back to a title-only key
+        # once the normalized title is 24+ chars (src/pipeline.py), which
+        # drops the URL from the comparison. If two items share the exact
+        # same URL but have unrelated, independently-long rewritten titles
+        # (e.g. an upstream/LLM producing multiple headlines for one link),
+        # they must still collapse to a single item — same-URL dedupe is a
+        # hard invariant, not just a content-similarity heuristic.
+        analyzer = AIAnalyzer(enable_ai=False)
+        same_url = "https://example.com/news/breaking-story"
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Enterprise cloud vendor announces quarterly roadmap updates",
+                    url=same_url,
+                    summary="s1",
+                    insight="i1",
+                    source_name="Vendor Blog",
+                    source_type="news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title="Totally unrelated headline about regional weather patterns",
+                    url=same_url,
+                    summary="s2",
+                    insight="i2",
+                    source_name="Weather Wire",
+                    source_type="news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        self.assertEqual(len(processed.items), 1)
+
     def test_post_process_ai_report_backfills_core_provider_coverage(self):
         analyzer = AIAnalyzer(enable_ai=False)
         report = AnalyzedReport(

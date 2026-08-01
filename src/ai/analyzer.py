@@ -501,9 +501,19 @@ class AIAnalyzer:
                 source_name=item.source_name,
                 summary=item.summary,
             )
-            if not key or key in seen_keys:
+            # content_dedupe_key falls back to a title-only key once the
+            # normalized title reaches 24+ chars (src/pipeline.py), which drops
+            # the URL from the comparison entirely. That breaks the invariant
+            # that same-URL items always collapse: a poisoned/rewritten-title
+            # source could emit N titles for one URL and all N would survive.
+            # Additionally lock on the canonical URL so same-URL items always
+            # merge regardless of how content_dedupe_key classified the title.
+            url_key = canonicalize_url(item.url)
+            if not key or key in seen_keys or (url_key and url_key in seen_keys):
                 continue
             seen_keys.add(key)
+            if url_key:
+                seen_keys.add(url_key)
             deduped.append(item)
 
         deduped.sort(
