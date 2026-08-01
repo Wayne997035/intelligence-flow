@@ -227,6 +227,42 @@ class TestAnalyzer(unittest.TestCase):
         self.assertIn("https://example.com/another-official", urls)
         self.assertNotIn("https://example.com/official/latest#b", urls)
 
+    def test_post_process_ai_report_collapses_cross_source_release_duplicate(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="OpenAI launches GPT-5.1 with faster reasoning",
+                    url="https://openai.com/index/gpt-5-1",
+                    summary="s1",
+                    insight="i1",
+                    source_name="OpenAI",
+                    source_type="official_news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title="TechCrunch: OpenAI's GPT-5.1 model is here",
+                    url="https://techcrunch.com/2026/04/12/openai-gpt-5-1",
+                    summary="s2",
+                    insight="i2",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        # Both items describe the same GPT-5.1 release; content_dedupe_key's
+        # release-family match (src/pipeline.py) should collapse them into one,
+        # matching the behaviour already used by discord_sender/notion_sender.
+        self.assertEqual(len(processed.items), 1)
+
     def test_post_process_ai_report_backfills_core_provider_coverage(self):
         analyzer = AIAnalyzer(enable_ai=False)
         report = AnalyzedReport(

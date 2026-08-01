@@ -11,7 +11,13 @@ from urllib.parse import urlsplit
 
 from src.config import Config
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
-from src.pipeline import canonicalize_url, normalize_text, parse_published_at, summarize_sources
+from src.pipeline import (
+    canonicalize_url,
+    content_dedupe_key,
+    normalize_text,
+    parse_published_at,
+    summarize_sources,
+)
 from src.utils.logger import logger
 
 try:
@@ -40,6 +46,12 @@ class AIAnalyzer:
     _STOCK_REPORT_ITEM_LIMIT = 7
     _REQUIRED_SOURCE_TYPES = ("official_news", "model_release", "github_release")
     _CORE_PROVIDERS = ("anthropic", "openai", "google", "xai")
+    # Governs display ORDER within a single rendered report (which item shows first),
+    # not which item survives dedupe. Deliberately ranked differently from
+    # pipeline._SOURCE_TYPE_SCORES (which governs dedupe survival): unifying the two
+    # would change the day-to-day reading order of every report, which is a separate
+    # decision from fixing cross-source duplicate collapsing. See pipeline.py's
+    # _SOURCE_TYPE_SCORES comment for the counterpart.
     _SOURCE_RANK = {
         "official_news": 0,
         "github_release": 1,
@@ -478,7 +490,17 @@ class AIAnalyzer:
         deduped: list[ReportItem] = []
         seen_keys: set[str] = set()
         for item in report.items:
-            key = canonicalize_url(item.url) or self._title_key(item.title)
+            # Delegate to the shared dedupe seam (src/pipeline.py) instead of a private
+            # URL-or-title key, so cross-source duplicates of the same release (e.g. the
+            # same model announced on the vendor's own site and reported by a news outlet)
+            # collapse via the same release-family logic used everywhere else in the
+            # pipeline (discord_sender.py, notion_sender.py, pipeline.deduplicate_and_rank).
+            key = content_dedupe_key(
+                title=item.title,
+                url=item.url,
+                source_name=item.source_name,
+                summary=item.summary,
+            )
             if not key or key in seen_keys:
                 continue
             seen_keys.add(key)

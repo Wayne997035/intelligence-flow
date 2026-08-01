@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from src.config import Config
+from src.deliverers.guard import should_deliver
 from src.models import AnalyzedReport
 from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
@@ -45,7 +46,7 @@ class NotionSender:
         self.enabled = Config.ENABLE_NOTION_DELIVERY if enabled is None else enabled
         self.notion = (
             Client(auth=Config.NOTION_TOKEN)
-            if Client and Config.NOTION_TOKEN and self.enabled and not self.dry_run
+            if Client and Config.NOTION_TOKEN and should_deliver(dry_run=self.dry_run, enabled=self.enabled)
             else None
         )
 
@@ -217,7 +218,7 @@ class NotionSender:
         bg_color: str,
     ) -> str | None:
         blocks = self.build_blocks(report, heading, bg_color)
-        if self.dry_run or not self.enabled:
+        if not should_deliver(dry_run=self.dry_run, enabled=self.enabled):
             logger.info(
                 "Notion delivery skipped (dry_run=%s, enabled=%s, blocks=%s).",
                 self.dry_run,
