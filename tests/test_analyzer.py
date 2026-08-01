@@ -369,6 +369,119 @@ class TestAnalyzer(unittest.TestCase):
         self.assertIn("https://anthropic.com/news/claude-opus-5", urls)
         self.assertIn("https://blog.google/technology/ai/gemini-4-ultra", urls)
 
+    def test_post_process_ai_report_ignores_non_http_scheme_for_dedupe_key(self):
+        # Attack: content_dedupe_key() (src/pipeline.py) folds the raw
+        # canonical URL as literal text into the haystack its release-family
+        # regex scans. A feed-controlled item can set
+        # url="release-family:openai-gpt-5" -- a non-http(s) "URL" whose
+        # scheme+path text itself contains the substrings "openai" and
+        # "gpt-5" -- and legitimately mint the exact same release-family key
+        # a real GPT-5 announcement would get. Whichever item is processed
+        # first then survives dedupe and the real item(s) covering that topic
+        # are silently dropped, with nothing in logs distinguishing this from
+        # ordinary duplicate collapsing (external-censorship primitive
+        # requiring no guessing beyond a public topic name).
+        #
+        # Note: the two real items below both literally say "OpenAI" and
+        # "GPT-5" in their own titles, so they legitimately collapse into
+        # ONE surviving item via this branch's pre-existing cross-source
+        # release-family merge (see
+        # test_post_process_ai_report_collapses_cross_source_release_duplicate)
+        # -- with or without Evil present, with or without this fix. That is
+        # correct, intended behavior, not the vulnerability. The invariant
+        # this test guards is narrower: Evil must never be the one occupying
+        # the shared release-family key, and real GPT-5 coverage must not be
+        # fully erased.
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Weekly community roundup of small model demos",
+                    url="release-family:openai-gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="Evil",
+                    source_type="official_news",
+                    published_at="2026-04-12T07:00:00Z",
+                ),
+                ReportItem(
+                    title="OpenAI launches GPT-5 with major reasoning gains",
+                    url="https://openai.com/index/gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="OpenAI",
+                    source_type="official_news",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+                ReportItem(
+                    title="TechCrunch: OpenAI's GPT-5 model is here and it is fast",
+                    url="https://techcrunch.com/gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        survivors = {item.source_name for item in processed.items}
+        self.assertIn("Evil", survivors)
+        self.assertTrue(
+            survivors & {"OpenAI", "TechCrunch"},
+            "real GPT-5 coverage must survive, not be fully erased by Evil",
+        )
+        self.assertEqual(len(processed.items), 2)
+
+    def test_post_process_ai_report_ignores_title_scheme_url_variant(self):
+        # Same class of forged-scheme attack as above, but using the
+        # "title:" scheme (a syntactically valid URI scheme per urlsplit,
+        # not an ad-hoc string) to confirm the fix scrubs any non-http(s)
+        # scheme generically rather than special-casing one literal prefix.
+        analyzer = AIAnalyzer(enable_ai=False)
+        real_title = "Anthropic releases Claude Opus 5 with a massive new context window"
+        real_title_alnum = "".join(ch for ch in real_title.lower() if ch.isalnum())
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Evil short unrelated headline",
+                    url=f"title:{real_title_alnum}",
+                    summary="",
+                    insight="",
+                    source_name="Evil",
+                    source_type="community",
+                    published_at="2026-04-12T07:00:00Z",
+                ),
+                ReportItem(
+                    title=real_title,
+                    url="https://anthropic.com/news/claude-opus-5",
+                    summary="",
+                    insight="",
+                    source_name="Anthropic",
+                    source_type="official_news",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        self.assertEqual(len(processed.items), 2)
+        self.assertEqual(
+            {item.source_name for item in processed.items},
+            {"Evil", "Anthropic"},
+        )
+
     def test_post_process_ai_report_backfills_core_provider_coverage(self):
         analyzer = AIAnalyzer(enable_ai=False)
         report = AnalyzedReport(

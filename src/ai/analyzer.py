@@ -490,6 +490,19 @@ class AIAnalyzer:
         deduped: list[ReportItem] = []
         seen_keys: set[str] = set()
         for item in report.items:
+            # Only trust http(s) URLs as dedupe-key input. content_dedupe_key()
+            # folds the raw canonical URL into the haystack it regex-matches
+            # against (src/pipeline.py), so a non-http(s) "url" is attacker-
+            # controlled free text disguised as a link: a scheme like
+            # "release-family:openai-gpt-5" legitimately mints the same
+            # release-family key a real GPT-5 item would get, letting a
+            # malicious item pre-empt that key and silently discard real
+            # coverage of the topic (an external-censorship primitive). Treat
+            # any non-http(s) url as absent before computing either key so a
+            # forged scheme falls back to a plain title comparison instead of
+            # being able to forge a URL-derived or release-family key.
+            dedupe_url = item.url if self._is_valid_source_url(item.url) else ""
+
             # Delegate to the shared dedupe seam (src/pipeline.py) instead of a private
             # URL-or-title key, so cross-source duplicates of the same release (e.g. the
             # same model announced on the vendor's own site and reported by a news outlet)
@@ -497,7 +510,7 @@ class AIAnalyzer:
             # pipeline (discord_sender.py, notion_sender.py, pipeline.deduplicate_and_rank).
             key = content_dedupe_key(
                 title=item.title,
-                url=item.url,
+                url=dedupe_url,
                 source_name=item.source_name,
                 summary=item.summary,
             )
@@ -508,7 +521,7 @@ class AIAnalyzer:
             # source could emit N titles for one URL and all N would survive.
             # Additionally lock on the canonical URL so same-URL items always
             # merge regardless of how content_dedupe_key classified the title.
-            url_key = canonicalize_url(item.url)
+            url_key = canonicalize_url(dedupe_url)
             url_key = f"urlkey:{url_key}" if url_key else ""
             if not key or key in seen_keys or (url_key and url_key in seen_keys):
                 continue
