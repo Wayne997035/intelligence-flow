@@ -8,6 +8,7 @@ from pathlib import Path
 from src.models import IntelligenceItem
 from src.pipeline import canonicalize_url, normalize_text
 from src.utils.logger import logger
+from src.utils.state_backends import resolve_backend
 
 
 class RunStateStore:
@@ -25,6 +26,7 @@ class RunStateStore:
         self.history_limit = history_limit
         self.ttl_hours = ttl_hours
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._backend = resolve_backend(str(self.path))
         self.state = self._load()
 
     def filter_new_items(
@@ -75,20 +77,14 @@ class RunStateStore:
         if not self.enabled:
             return
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(self.state, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        logger.info("Saved run state to %s.", self.path)
+        self._backend.save(self.state)
 
     def _load(self) -> dict[str, list[dict[str, str]]]:
-        if not self.enabled or not self.path.exists():
+        if not self.enabled:
             return {}
 
-        try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Failed to load state store %s: %s", self.path, exc)
+        payload = self._backend.load()
+        if not isinstance(payload, dict):
             return {}
 
         normalized: dict[str, list[dict[str, str]]] = {}

@@ -93,6 +93,7 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 | `AI_NEWS_LOOKBACK_DAYS` | AI 新聞時間窗（預設 7） |
 | `AI_HIGH_IMPACT_LOOKBACK_DAYS` | AI 高衝擊延伸內容時間窗（預設 30） |
 | `ENABLE_HISTORY_DEDUP` | 跨輪去重（預設關閉） |
+| `NOTION_STATE_DB_ID` / `NOTION_STATE_DS_ID` | 跨輪去重狀態持久化用的 Notion database / data source id |
 | `US_STOCKS` / `TW_STOCKS` | 追蹤標的 |
 | `TW_STOCK_SOURCE_ORDER` | 台股來源順序（預設 `yfinance,mis`） |
 
@@ -107,4 +108,15 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 ## 輸出檔案
 
 - `data/latest_run.json`：本輪執行結果（payload + meta）
-- `data/run_state.json`：跨輪去重狀態（啟用時才使用）
+- `data/run_state.json`：跨輪去重狀態的**本機檔案備份**（`.gitignore` 排除，不會進 repo）
+
+## 跨輪去重狀態持久化
+
+`ENABLE_HISTORY_DEDUP=true` 啟用後，`RunStateStore` 透過可替換的儲存後端（`src/utils/state_backends.py`）讀寫去重狀態：
+
+- **本機 / 未設定 Notion state DB 時**：退回 `FileStateBackend`，寫入 `data/run_state.json`。這個檔案只活在單一 process 的檔案系統上。
+- **設定 `NOTION_STATE_DB_ID` + `NOTION_STATE_DS_ID`（且 `NOTION_TOKEN` 存在）時**：改用 `NotionStateBackend`，把狀態存成 Notion 專用資料庫裡的一列（單一 code block，JSON 依 2000 字元切成多個 rich_text chunk）。
+
+**為什麼需要這個**：GitHub Actions 排程（`intel-flow-schedule.yml`）每次都是全新的 `ubuntu-latest` 容器，且該 workflow 沒有對 `data/` 做任何 cache 或 artifact 步驟。也就是說，若只用 `FileStateBackend`，`data/run_state.json` **不會**在兩次排程之間存活 —— 即使打開 `ENABLE_HISTORY_DEDUP`，跨輪去重在 server 上實際上從未真正生效過，且不會有任何錯誤訊息。要讓跨輪去重在排程環境下真的運作，MUST 設定 `NOTION_STATE_DB_ID` / `NOTION_STATE_DS_ID`（workflow 已透過對應 secrets 傳入）。
+
+Notion 讀寫失敗（掛掉、rate limit、token 過期、權限被移除）時會降級為空狀態並記 warning log，本輪報告照常產出與送達，不會中止流程；代價是那一輪不去重。
