@@ -206,15 +206,16 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     notion = NotionSender(dry_run=dry_run)
     discord = DiscordSender(dry_run=dry_run)
     # `not dry_run` here is unrelated to the delivery-guard choke point in
-    # src/deliverers/guard.py. Scheduled/production runs always pass
-    # `--live-delivery` (dry_run=False) so this condition never gates production
-    # history dedup. Locally, dry-run and live-delivery runs don't actually share
-    # any persisted state to begin with: containers start fresh each run,
-    # `data/*.json` is gitignored, and the deploy workflow has no cache/artifact
-    # step that would carry `run_state.json` between invocations — so there's no
-    # cross-contamination risk this flag is guarding against. It's left as-is
-    # because it only affects local dev ergonomics (dry-run test runs don't
-    # pollute the on-disk dedup history file used by subsequent runs).
+    # src/deliverers/guard.py.
+    #
+    # In production it never fires: the scheduled workflow always passes
+    # `--live-delivery`, so dry_run is False on every real run and this
+    # condition has no say over production history dedup.
+    #
+    # On a local dev machine it does matter, and that is the only reason it is
+    # kept: the filesystem persists between runs, so without it a throwaway
+    # dry-run would write throwaway fingerprints into the same on-disk dedup
+    # history that later runs read back.
     state_store = RunStateStore(
         Config.STATE_FILE,
         enabled=Config.ENABLE_HISTORY_DEDUP and not inputs.get("_fixture", False) and not dry_run,
