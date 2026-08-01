@@ -11,7 +11,13 @@ from urllib.parse import urlsplit
 
 from src.config import Config
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
-from src.pipeline import canonicalize_url, normalize_text, parse_published_at, summarize_sources
+from src.pipeline import (
+    canonicalize_url,
+    content_dedupe_key,
+    normalize_text,
+    parse_published_at,
+    summarize_sources,
+)
 from src.utils.logger import logger
 
 try:
@@ -40,6 +46,12 @@ class AIAnalyzer:
     _STOCK_REPORT_ITEM_LIMIT = 7
     _REQUIRED_SOURCE_TYPES = ("official_news", "model_release", "github_release")
     _CORE_PROVIDERS = ("anthropic", "openai", "google", "xai")
+    # Governs display ORDER within a single rendered report (which item shows first),
+    # not which item survives dedupe. Deliberately ranked differently from
+    # pipeline._SOURCE_TYPE_SCORES (which governs dedupe survival): unifying the two
+    # would change the day-to-day reading order of every report, which is a separate
+    # decision from fixing cross-source duplicate collapsing. See pipeline.py's
+    # _SOURCE_TYPE_SCORES comment for the counterpart.
     _SOURCE_RANK = {
         "official_news": 0,
         "github_release": 1,
@@ -478,10 +490,44 @@ class AIAnalyzer:
         deduped: list[ReportItem] = []
         seen_keys: set[str] = set()
         for item in report.items:
-            key = canonicalize_url(item.url) or self._title_key(item.title)
-            if not key or key in seen_keys:
+            # Only trust http(s) URLs as dedupe-key input. content_dedupe_key()
+            # folds the raw canonical URL into the haystack it regex-matches
+            # against (src/pipeline.py), so a non-http(s) "url" is attacker-
+            # controlled free text disguised as a link: a scheme like
+            # "release-family:openai-gpt-5" legitimately mints the same
+            # release-family key a real GPT-5 item would get, letting a
+            # malicious item pre-empt that key and silently discard real
+            # coverage of the topic (an external-censorship primitive). Treat
+            # any non-http(s) url as absent before computing either key so a
+            # forged scheme falls back to a plain title comparison instead of
+            # being able to forge a URL-derived or release-family key.
+            dedupe_url = item.url if self._is_valid_source_url(item.url) else ""
+
+            # Delegate to the shared dedupe seam (src/pipeline.py) instead of a private
+            # URL-or-title key, so cross-source duplicates of the same release (e.g. the
+            # same model announced on the vendor's own site and reported by a news outlet)
+            # collapse via the same release-family logic used everywhere else in the
+            # pipeline (discord_sender.py, notion_sender.py, pipeline.deduplicate_and_rank).
+            key = content_dedupe_key(
+                title=item.title,
+                url=dedupe_url,
+                source_name=item.source_name,
+                summary=item.summary,
+            )
+            # content_dedupe_key falls back to a title-only key once the
+            # normalized title reaches 24+ chars (src/pipeline.py), which drops
+            # the URL from the comparison entirely. That breaks the invariant
+            # that same-URL items always collapse: a poisoned/rewritten-title
+            # source could emit N titles for one URL and all N would survive.
+            # Additionally lock on the canonical URL so same-URL items always
+            # merge regardless of how content_dedupe_key classified the title.
+            url_key = canonicalize_url(dedupe_url)
+            url_key = f"urlkey:{url_key}" if url_key else ""
+            if not key or key in seen_keys or (url_key and url_key in seen_keys):
                 continue
             seen_keys.add(key)
+            if url_key:
+                seen_keys.add(url_key)
             deduped.append(item)
 
         deduped.sort(

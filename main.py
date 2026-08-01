@@ -205,6 +205,17 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     analyzer = AIAnalyzer(enable_ai=enable_ai)
     notion = NotionSender(dry_run=dry_run)
     discord = DiscordSender(dry_run=dry_run)
+    # `not dry_run` here is unrelated to the delivery-guard choke point in
+    # src/deliverers/guard.py.
+    #
+    # In production it never fires: the scheduled workflow always passes
+    # `--live-delivery`, so dry_run is False on every real run and this
+    # condition has no say over production history dedup.
+    #
+    # On a local dev machine it does matter, and that is the only reason it is
+    # kept: the filesystem persists between runs, so without it a throwaway
+    # dry-run would write throwaway fingerprints into the same on-disk dedup
+    # history that later runs read back.
     state_store = RunStateStore(
         Config.STATE_FILE,
         enabled=Config.ENABLE_HISTORY_DEDUP and not inputs.get("_fixture", False) and not dry_run,

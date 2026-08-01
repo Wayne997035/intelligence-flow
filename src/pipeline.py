@@ -10,6 +10,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from src.models import IntelligenceItem
 
 _DROP_QUERY_KEYS = {"ref", "source", "si", "fbclid", "gclid"}
+# Governs which candidate SURVIVES when content_dedupe_key() collapses duplicates
+# (used by deduplicate_and_rank / _should_replace below), not report display order.
+# Deliberately ranked differently from analyzer._SOURCE_RANK (which governs display
+# order): unifying the two would change the day-to-day reading order of every report,
+# which is a separate decision from fixing cross-source duplicate collapsing. See
+# analyzer.py's _SOURCE_RANK comment for the counterpart.
 _SOURCE_TYPE_SCORES = {
     "official_news": 100,
     "model_release": 95,

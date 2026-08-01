@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 from src.ai.analyzer import AIAnalyzer
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
+from src.pipeline import content_dedupe_key
 
 
 class TestAnalyzer(unittest.TestCase):
@@ -226,6 +227,260 @@ class TestAnalyzer(unittest.TestCase):
         self.assertIn("https://example.com/official/latest#a", urls)
         self.assertIn("https://example.com/another-official", urls)
         self.assertNotIn("https://example.com/official/latest#b", urls)
+
+    def test_post_process_ai_report_collapses_cross_source_release_duplicate(self):
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="OpenAI launches GPT-5.1 with faster reasoning",
+                    url="https://openai.com/index/gpt-5-1",
+                    summary="s1",
+                    insight="i1",
+                    source_name="OpenAI",
+                    source_type="official_news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title="TechCrunch: OpenAI's GPT-5.1 model is here",
+                    url="https://techcrunch.com/2026/04/12/openai-gpt-5-1",
+                    summary="s2",
+                    insight="i2",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        # Both items describe the same GPT-5.1 release; content_dedupe_key's
+        # release-family match (src/pipeline.py) should collapse them into one,
+        # matching the behaviour already used by discord_sender/notion_sender.
+        self.assertEqual(len(processed.items), 1)
+
+    def test_post_process_ai_report_collapses_same_url_regardless_of_title(self):
+        # Regression guard: content_dedupe_key falls back to a title-only key
+        # once the normalized title is 24+ chars (src/pipeline.py), which
+        # drops the URL from the comparison. If two items share the exact
+        # same URL but have unrelated, independently-long rewritten titles
+        # (e.g. an upstream/LLM producing multiple headlines for one link),
+        # they must still collapse to a single item — same-URL dedupe is a
+        # hard invariant, not just a content-similarity heuristic.
+        analyzer = AIAnalyzer(enable_ai=False)
+        same_url = "https://example.com/news/breaking-story"
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Enterprise cloud vendor announces quarterly roadmap updates",
+                    url=same_url,
+                    summary="s1",
+                    insight="i1",
+                    source_name="Vendor Blog",
+                    source_type="news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title="Totally unrelated headline about regional weather patterns",
+                    url=same_url,
+                    summary="s2",
+                    insight="i2",
+                    source_name="Weather Wire",
+                    source_type="news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        self.assertEqual(len(processed.items), 1)
+
+    def test_post_process_ai_report_url_key_is_namespaced_from_content_key(self):
+        # Round 2 regression: url_key must not share the raw seen_keys
+        # namespace with content_dedupe_key()'s own output. content_dedupe_key
+        # can return keys shaped like "title:<alnum>" (src/pipeline.py), and
+        # "title" is itself a valid URL scheme, so
+        # canonicalize_url("title:<alnum>") echoes the string back unchanged.
+        # Before the "urlkey:" prefix, an attacker-controlled item.url could
+        # therefore land in seen_keys as the *exact* string a legitimate
+        # item's content_dedupe_key would produce, silently discarding that
+        # legitimate item as a false "duplicate" (an external-censorship
+        # primitive requiring no guessing beyond a public headline).
+        analyzer = AIAnalyzer(enable_ai=False)
+        victim_title = "Anthropic releases Claude Opus 5 with a massive new context window"
+        other_real_title = "Google ships Gemini 4 Ultra with a faster multimodal reasoning stack"
+        poisoned_url = content_dedupe_key(
+            title=victim_title,
+            url="https://anthropic.com/news/claude-opus-5",
+            source_name="Anthropic",
+            summary="launch details",
+        )
+        self.assertTrue(poisoned_url.startswith("title:"))
+
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Unrelated evil headline about a completely different topic",
+                    url=poisoned_url,
+                    summary="s0",
+                    insight="i0",
+                    source_name="Evil Corp",
+                    source_type="community",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+                ReportItem(
+                    title=victim_title,
+                    url="https://anthropic.com/news/claude-opus-5",
+                    summary="s1",
+                    insight="i1",
+                    source_name="Anthropic",
+                    source_type="official_news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+                ReportItem(
+                    title=other_real_title,
+                    url="https://blog.google/technology/ai/gemini-4-ultra",
+                    summary="s2",
+                    insight="i2",
+                    source_name="Google",
+                    source_type="official_news",
+                    published_at="2026-04-12T10:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+        urls = {item.url for item in processed.items}
+
+        self.assertIn("https://anthropic.com/news/claude-opus-5", urls)
+        self.assertIn("https://blog.google/technology/ai/gemini-4-ultra", urls)
+
+    def test_post_process_ai_report_ignores_non_http_scheme_for_dedupe_key(self):
+        # Attack: content_dedupe_key() (src/pipeline.py) folds the raw
+        # canonical URL as literal text into the haystack its release-family
+        # regex scans. A feed-controlled item can set
+        # url="release-family:openai-gpt-5" -- a non-http(s) "URL" whose
+        # scheme+path text itself contains the substrings "openai" and
+        # "gpt-5" -- and legitimately mint the exact same release-family key
+        # a real GPT-5 announcement would get. Whichever item is processed
+        # first then survives dedupe and the real item(s) covering that topic
+        # are silently dropped, with nothing in logs distinguishing this from
+        # ordinary duplicate collapsing (external-censorship primitive
+        # requiring no guessing beyond a public topic name).
+        #
+        # Note: the two real items below both literally say "OpenAI" and
+        # "GPT-5" in their own titles, so they legitimately collapse into
+        # ONE surviving item via this branch's pre-existing cross-source
+        # release-family merge (see
+        # test_post_process_ai_report_collapses_cross_source_release_duplicate)
+        # -- with or without Evil present, with or without this fix. That is
+        # correct, intended behavior, not the vulnerability. The invariant
+        # this test guards is narrower: Evil must never be the one occupying
+        # the shared release-family key, and real GPT-5 coverage must not be
+        # fully erased.
+        analyzer = AIAnalyzer(enable_ai=False)
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Weekly community roundup of small model demos",
+                    url="release-family:openai-gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="Evil",
+                    source_type="official_news",
+                    published_at="2026-04-12T07:00:00Z",
+                ),
+                ReportItem(
+                    title="OpenAI launches GPT-5 with major reasoning gains",
+                    url="https://openai.com/index/gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="OpenAI",
+                    source_type="official_news",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+                ReportItem(
+                    title="TechCrunch: OpenAI's GPT-5 model is here and it is fast",
+                    url="https://techcrunch.com/gpt-5",
+                    summary="",
+                    insight="",
+                    source_name="TechCrunch",
+                    source_type="news",
+                    published_at="2026-04-12T09:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        survivors = {item.source_name for item in processed.items}
+        self.assertIn("Evil", survivors)
+        self.assertTrue(
+            survivors & {"OpenAI", "TechCrunch"},
+            "real GPT-5 coverage must survive, not be fully erased by Evil",
+        )
+        self.assertEqual(len(processed.items), 2)
+
+    def test_post_process_ai_report_ignores_title_scheme_url_variant(self):
+        # Same class of forged-scheme attack as above, but using the
+        # "title:" scheme (a syntactically valid URI scheme per urlsplit,
+        # not an ad-hoc string) to confirm the fix scrubs any non-http(s)
+        # scheme generically rather than special-casing one literal prefix.
+        analyzer = AIAnalyzer(enable_ai=False)
+        real_title = "Anthropic releases Claude Opus 5 with a massive new context window"
+        real_title_alnum = "".join(ch for ch in real_title.lower() if ch.isalnum())
+        report = AnalyzedReport(
+            title="AI 技術前沿情報",
+            summary="x",
+            items=[
+                ReportItem(
+                    title="Evil short unrelated headline",
+                    url=f"title:{real_title_alnum}",
+                    summary="",
+                    insight="",
+                    source_name="Evil",
+                    source_type="community",
+                    published_at="2026-04-12T07:00:00Z",
+                ),
+                ReportItem(
+                    title=real_title,
+                    url="https://anthropic.com/news/claude-opus-5",
+                    summary="",
+                    insight="",
+                    source_name="Anthropic",
+                    source_type="official_news",
+                    published_at="2026-04-12T08:00:00Z",
+                ),
+            ],
+            outlook="o",
+            outlook_label="🔮 未來展望",
+        )
+
+        processed = analyzer._post_process_ai_report(report, [])
+
+        self.assertEqual(len(processed.items), 2)
+        self.assertEqual(
+            {item.source_name for item in processed.items},
+            {"Evil", "Anthropic"},
+        )
 
     def test_post_process_ai_report_backfills_core_provider_coverage(self):
         analyzer = AIAnalyzer(enable_ai=False)

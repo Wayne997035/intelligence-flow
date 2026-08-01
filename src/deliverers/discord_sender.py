@@ -3,6 +3,7 @@ from __future__ import annotations
 import requests
 
 from src.config import Config
+from src.deliverers.guard import should_deliver
 from src.models import AnalyzedReport
 from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
@@ -185,7 +186,7 @@ class DiscordSender:
         return text[: limit - 3].rstrip() + "..."
 
     def _deliver(self, payload: dict) -> None:
-        if self.dry_run or not self.enabled:
+        if not should_deliver(dry_run=self.dry_run, enabled=self.enabled):
             logger.info("Discord delivery skipped (dry_run=%s, enabled=%s).", self.dry_run, self.enabled)
             return
         if not Config.DISCORD_WEBHOOK_URL:
