@@ -25,6 +25,9 @@ jobs:
       ENABLE_AI_ANALYSIS: "true"
       ENABLE_DISCORD_DELIVERY: "true"
       ENABLE_NOTION_DELIVERY: "true"
+      # 跨輪去重預設關閉（config.py），排程這裡明確打開 —— 否則 RunStateStore
+      # 整個停用，下面的 NOTION_STATE_* 也就永遠用不到，等於這個功能不會執行。
+      ENABLE_HISTORY_DEDUP: "true"
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
