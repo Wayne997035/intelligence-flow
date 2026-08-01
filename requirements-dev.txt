@@ -1,0 +1,5 @@
+# Development / CI dependencies.
+# Runtime deps live in requirements.txt; this file adds the test toolchain.
+-r requirements.txt
+
+pytest

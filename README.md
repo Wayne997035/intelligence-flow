@@ -25,6 +25,12 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+要跑測試的話改裝 dev 依賴（含 `requirements.txt` 全部內容 + pytest）：
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 建立本機環境檔（建議）：
 
 ```bash
