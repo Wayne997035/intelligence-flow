@@ -1,9 +1,10 @@
 import json
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.utils.logger import logger
 from src.utils.state_backends import (
+    _SORT_OLDEST_FIRST,
     FileStateBackend,
     NotionStateBackend,
     resolve_backend,
@@ -23,6 +24,7 @@ class TestNotionStateBackendLoad(unittest.TestCase):
             data_source_id="ds-1",
             filter={"property": "Name", "title": {"equals": "_state"}},
             page_size=1,
+            sorts=_SORT_OLDEST_FIRST,
         )
         client.databases.query.assert_not_called()
 
@@ -138,13 +140,27 @@ class TestNotionStateBackendSave(unittest.TestCase):
 
         client.pages.create.assert_called_once()
 
-    def test_save_confirm_query_failure_warns_and_falls_back_to_create(self):
+    def test_save_confirm_query_failure_warns_and_skips_save(self):
+        """Was `test_save_confirm_query_failure_warns_and_falls_back_to_create`
+        and asserted `client.pages.create.assert_called_once()` on a confirm-
+        query failure -- i.e. it encoded "query failed" and "query
+        succeeded with zero rows" as the same outcome (fall through to
+        `pages.create`). That's the exact bug 🟡 Minor 2 flags: a transient
+        429/5xx on the confirm-check would then be indistinguishable from a
+        genuinely-absent row, and a `pages.create` right after a flaky
+        confirm-check would produce a second `_state` row -- reintroducing
+        the duplicate-row bug commit aadfb0f fixed, through a different
+        door. `_find_existing_page` now returns a third "unknown" status
+        for query failures, and save() must skip persisting (not create)
+        when it sees "unknown". Renamed + rewritten to assert that.
+
+        Mutation self-proof B target: reverting save()'s `if status ==
+        "unknown": ... return` back to treating "unknown" the same as
+        "confirmed_absent" (i.e. falling through to pages.create) makes
+        this test fail.
+        """
         client = MagicMock()
         client.data_sources.query.side_effect = RuntimeError("notion is down")
-        client.pages.create.return_value = {"id": "page-1"}
-        client.blocks.children.list.return_value = {
-            "results": [{"id": "block-1", "type": "code", "code": {"rich_text": []}}]
-        }
         backend = NotionStateBackend(client, "db-1", "ds-1")
 
         with self.assertLogs(logger, level="WARNING") as captured:
@@ -156,8 +172,13 @@ class TestNotionStateBackendSave(unittest.TestCase):
                 for line in captured.output
             )
         )
-        client.pages.create.assert_called_once()
-        self.assertEqual(backend._page_id, "page-1")
+        self.assertTrue(
+            any("Skipping Notion state save this run" in line for line in captured.output)
+        )
+        client.pages.create.assert_not_called()
+        client.blocks.update.assert_not_called()
+        client.blocks.children.append.assert_not_called()
+        self.assertIsNone(backend._page_id)
 
     def test_save_updates_existing_block_in_place(self):
         client = MagicMock()
@@ -290,6 +311,31 @@ class TestResolveBackend(unittest.TestCase):
         backend = resolve_backend("data/run_state.json", config=FakeConfig)
 
         self.assertIsInstance(backend, NotionStateBackend)
+
+    def test_resolve_backend_falls_back_to_file_backend_when_client_construction_raises(self):
+        """Mutation self-proof A target: removing the try/except around
+        `Client(auth=token)` in resolve_backend() makes this test fail --
+        the TypeError propagates out of resolve_backend() (and from there,
+        uncaught, all the way to main()) instead of degrading to
+        FileStateBackend."""
+
+        class FakeConfig:
+            NOTION_STATE_DB_ID = "db-1"
+            NOTION_STATE_DS_ID = "ds-1"
+            NOTION_TOKEN = "fake-token-not-real"  # mock only, never a live secret
+
+        def raising_client(*args, **kwargs):
+            raise TypeError("Client.__init__() got an unexpected keyword argument 'proxies'")
+
+        with patch("src.utils.state_backends.Client", side_effect=raising_client):
+            with self.assertLogs(logger, level="WARNING") as captured:
+                backend = resolve_backend("data/run_state.json", config=FakeConfig)
+
+        self.assertIsInstance(backend, FileStateBackend)
+        self.assertEqual(str(backend.path), "data/run_state.json")
+        self.assertTrue(
+            any("Failed to construct Notion client" in line for line in captured.output)
+        )
 
 
 if __name__ == "__main__":
