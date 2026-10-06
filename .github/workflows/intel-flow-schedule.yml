@@ -71,6 +71,10 @@ jobs:
           DRY_RUN: "true"
         run: python main.py --once
 
+      - name: Summarize dry run
+        if: ${{ always() && inputs.dry_run }}
+        run: python scripts/summarize_run.py
+
       - name: Upload run artifact
         if: ${{ always() && inputs.dry_run }}
         uses: actions/upload-artifact@v4

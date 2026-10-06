@@ -237,23 +237,31 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
     official_fetcher = OfficialAICollector()
     github_release_fetcher = GitHubReleaseCollector()
     google_news_fetcher = GoogleNewsCollector()
+    stock_sources = {
+        "newsapi": news_fetcher.fetch_stock_news(),
+        "ticker_news": stock_fetcher.fetch_ticker_news(),
+        "google_news": google_news_fetcher.fetch_stock_topics(),
+    }
+    ai_sources = {
+        "newsapi": news_fetcher.fetch_ai_tech_news(),
+        "google_news": google_news_fetcher.fetch_ai_topics(),
+        "official": official_fetcher.fetch_updates(),
+        "github_release": github_release_fetcher.fetch_latest_releases(),
+        "community": tech_fetcher.fetch_all_community_ai(),
+        "huggingface": hf_fetcher.fetch_all_hf(),
+        "arxiv": arxiv_fetcher.fetch_all_arxiv(),
+    }
+    source_counts = {
+        "stock_news": {name: len(items) for name, items in stock_sources.items()},
+        "ai_news": {name: len(items) for name, items in ai_sources.items()},
+    }
+    logger.info("Collected item counts per source: %s", source_counts)
     return {
         "us_stocks": stock_fetcher.fetch_us_stocks(),
         "tw_stocks": stock_fetcher.fetch_tw_stocks(),
-        "stock_news": (
-            news_fetcher.fetch_stock_news()
-            + stock_fetcher.fetch_ticker_news()
-            + google_news_fetcher.fetch_stock_topics()
-        ),
-        "ai_news": (
-            news_fetcher.fetch_ai_tech_news()
-            + google_news_fetcher.fetch_ai_topics()
-            + official_fetcher.fetch_updates()
-            + github_release_fetcher.fetch_latest_releases()
-            + tech_fetcher.fetch_all_community_ai()
-            + hf_fetcher.fetch_all_hf()
-            + arxiv_fetcher.fetch_all_arxiv()
-        ),
+        "stock_news": [item for items in stock_sources.values() for item in items],
+        "ai_news": [item for items in ai_sources.values() for item in items],
+        "_source_counts": source_counts,
     }
 
 
@@ -415,6 +423,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
             "enable_ai": enable_ai,
             "stock_duplicates_skipped": skipped_stock_duplicates,
             "ai_duplicates_skipped": skipped_ai_duplicates,
+            "source_counts": inputs.get("_source_counts", {}),
             "ai_pipeline": {
                 "raw_count": len(inputs.get("ai_news", [])),
                 "trimmed_count": len(ai_raw_trimmed),
