@@ -202,7 +202,7 @@ class TestLaunchStoryDedupe(unittest.TestCase):
             )
         ]
         items.insert(
-            0,
+            2,
             IntelligenceItem(
                 title="[Official] Gemini 4 Argon: our next era of frontier intelligence",
                 url="https://deepmind.google/gemini-4",

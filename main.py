@@ -26,6 +26,7 @@ from src.pipeline import (
     launch_story_key,
     normalize_item,
     parse_published_at,
+    source_quality_score,
 )
 from src.utils.logger import logger
 from src.utils.state_store import RunStateStore, dump_artifact
@@ -53,14 +54,25 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
     """Quota-based pick for the main AI report, at most one item per model
     launch: three outlets covering "Gemini 4 Argon" should take one slot, not
     three. The extra coverage still reaches the Notion appendix."""
-    seen_launches: set[str] = set()
+    # Keep the story's slot where it first ranks, but fill it with the
+    # highest-quality source (the provider's own post over press coverage).
+    best_by_story: dict[str, object] = {}
+    for item in items:
+        story = launch_story_key(f"{item.title} {item.desc}", source_type=item.source_type)
+        if story and (
+            story not in best_by_story or source_quality_score(item) > source_quality_score(best_by_story[story])
+        ):
+            best_by_story[story] = item
+
+    placed: set[str] = set()
     unique_story_items: list = []
     for item in items:
         story = launch_story_key(f"{item.title} {item.desc}", source_type=item.source_type)
         if story:
-            if story in seen_launches:
+            if story in placed:
                 continue
-            seen_launches.add(story)
+            placed.add(story)
+            item = best_by_story[story]
         unique_story_items.append(item)
     return _select_ai_report_candidates(unique_story_items, limit)
 
