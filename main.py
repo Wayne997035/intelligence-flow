@@ -9,6 +9,7 @@ from pathlib import Path
 from src.ai.analyzer import AIAnalyzer
 from src.collectors.arxiv_collector import ArxivCollector
 from src.collectors.github_release_collector import GitHubReleaseCollector
+from src.collectors.google_news_collector import GoogleNewsCollector
 from src.collectors.hf_collector import HFCollector
 from src.collectors.news_collector import NewsCollector
 from src.collectors.official_ai_collector import OfficialAICollector
@@ -22,8 +23,10 @@ from src.pipeline import (
     deduplicate_and_rank,
     filter_recent_items,
     is_relevant_ai_item,
+    launch_story_key,
     normalize_item,
     parse_published_at,
+    source_quality_score,
 )
 from src.utils.logger import logger
 from src.utils.state_store import RunStateStore, dump_artifact
@@ -48,6 +51,33 @@ def trim_descriptions(items: list[dict], max_length: int) -> list[dict]:
 
 
 def select_ai_report_candidates(items: list, limit: int) -> list:
+    """Quota-based pick for the main AI report, at most one item per model
+    launch: three outlets covering "Gemini 4 Argon" should take one slot, not
+    three. The extra coverage still reaches the Notion appendix."""
+    # Keep the story's slot where it first ranks, but fill it with the
+    # highest-quality source (the provider's own post over press coverage).
+    best_by_story: dict[str, object] = {}
+    for item in items:
+        story = launch_story_key(f"{item.title} {item.desc}", source_type=item.source_type)
+        if story and (
+            story not in best_by_story or source_quality_score(item) > source_quality_score(best_by_story[story])
+        ):
+            best_by_story[story] = item
+
+    placed: set[str] = set()
+    unique_story_items: list = []
+    for item in items:
+        story = launch_story_key(f"{item.title} {item.desc}", source_type=item.source_type)
+        if story:
+            if story in placed:
+                continue
+            placed.add(story)
+            item = best_by_story[story]
+        unique_story_items.append(item)
+    return _select_ai_report_candidates(unique_story_items, limit)
+
+
+def _select_ai_report_candidates(items: list, limit: int) -> list:
     quotas = [
         ("official_news", 6),
         ("news", 4),
@@ -139,6 +169,55 @@ def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> 
     attach_report_appendix(report, selected_items, summarize_item=summarize_item)
 
 
+def build_stock_priority() -> list[str]:
+    """Symbols interleaved with their aliases so a "SpaceX" headline ranks like "SPCX"."""
+    priority: list[str] = []
+    for symbol in Config.US_STOCKS + Config.TW_STOCKS:
+        for keyword in (symbol, *Config.STOCK_NAME_ALIASES.get(symbol, [])):
+            if keyword not in priority:
+                priority.append(keyword)
+    return priority
+
+
+def balance_stock_news(items: list) -> list:
+    """Interleave ranked stock news round-robin across watched symbols.
+
+    deduplicate_and_rank orders by the index of the first matched keyword, so
+    every NVDA headline would otherwise outrank every SPCX headline and the
+    later symbols in the watchlist would never reach the report's slots.
+    Items not tied to any symbol (sector themes) form their own trailing group.
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in items:
+        text = f"{item.title} {item.desc}".lower()
+        group = next(
+            (
+                symbol
+                for symbol in Config.US_STOCKS + Config.TW_STOCKS
+                if any(
+                    keyword.lower() in text or keyword in (item.tags or [])
+                    for keyword in (symbol, *Config.STOCK_NAME_ALIASES.get(symbol, []))
+                )
+            ),
+            "_other",
+        )
+        if group not in groups:
+            groups[group] = []
+            order.append(group)
+        groups[group].append(item)
+
+    if "_other" in order:
+        order.remove("_other")
+        order.append("_other")
+    balanced: list = []
+    while any(groups[group] for group in order):
+        for group in order:
+            if groups[group]:
+                balanced.append(groups[group].pop(0))
+    return balanced
+
+
 def merge_unique_items(*item_groups: list) -> list:
     merged: list = []
     seen_urls: set[str] = set()
@@ -186,18 +265,32 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
     arxiv_fetcher = ArxivCollector()
     official_fetcher = OfficialAICollector()
     github_release_fetcher = GitHubReleaseCollector()
+    google_news_fetcher = GoogleNewsCollector()
+    stock_sources = {
+        "newsapi": news_fetcher.fetch_stock_news(),
+        "ticker_news": stock_fetcher.fetch_ticker_news(),
+        "google_news": google_news_fetcher.fetch_stock_topics(),
+    }
+    ai_sources = {
+        "newsapi": news_fetcher.fetch_ai_tech_news(),
+        "google_news": google_news_fetcher.fetch_ai_topics(),
+        "official": official_fetcher.fetch_updates(),
+        "github_release": github_release_fetcher.fetch_latest_releases(),
+        "community": tech_fetcher.fetch_all_community_ai(),
+        "huggingface": hf_fetcher.fetch_all_hf(),
+        "arxiv": arxiv_fetcher.fetch_all_arxiv(),
+    }
+    source_counts = {
+        "stock_news": {name: len(items) for name, items in stock_sources.items()},
+        "ai_news": {name: len(items) for name, items in ai_sources.items()},
+    }
+    logger.info("Collected item counts per source: %s", source_counts)
     return {
         "us_stocks": stock_fetcher.fetch_us_stocks(),
         "tw_stocks": stock_fetcher.fetch_tw_stocks(),
-        "stock_news": news_fetcher.fetch_stock_news(),
-        "ai_news": (
-            news_fetcher.fetch_ai_tech_news()
-            + official_fetcher.fetch_updates()
-            + github_release_fetcher.fetch_latest_releases()
-            + tech_fetcher.fetch_all_community_ai()
-            + hf_fetcher.fetch_all_hf()
-            + arxiv_fetcher.fetch_all_arxiv()
-        ),
+        "stock_news": [item for items in stock_sources.values() for item in items],
+        "ai_news": [item for items in ai_sources.values() for item in items],
+        "_source_counts": source_counts,
     }
 
 
@@ -223,9 +316,11 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         ttl_hours=Config.HISTORY_TTL_HOURS,
     )
 
-    stock_priority = Config.US_STOCKS + Config.TW_STOCKS
+    stock_priority = build_stock_priority()
     ai_priority = [
         "Claude",
+        "Opus",
+        "Sonnet",
         "Mythos",
         "Glasswing",
         "Gemini",
@@ -265,12 +360,15 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     ai_raw_trimmed = trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
     ai_input_items: list = []
     ai_irrelevant_count = 0
+    ai_irrelevant_sample: list[str] = []
     for item in ai_raw_trimmed:
         normalized = normalize_item(item)
         if is_relevant_ai_item(normalized):
             ai_input_items.append(item)
         else:
             ai_irrelevant_count += 1
+            if len(ai_irrelevant_sample) < 12:
+                ai_irrelevant_sample.append(normalized.title)
     ai_news_ranked = deduplicate_and_rank(
         ai_input_items,
         ai_priority,
@@ -279,11 +377,13 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         default_source_type="news",
     )
 
-    stock_news_recent = filter_recent_items(
-        stock_news_ranked,
-        max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
-        now=now,
-        require_published_at=True,
+    stock_news_recent = balance_stock_news(
+        filter_recent_items(
+            stock_news_ranked,
+            max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
+            now=now,
+            require_published_at=True,
+        )
     )
     ai_news_recent = filter_recent_items(
         ai_news_ranked,
@@ -352,10 +452,12 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
             "enable_ai": enable_ai,
             "stock_duplicates_skipped": skipped_stock_duplicates,
             "ai_duplicates_skipped": skipped_ai_duplicates,
+            "source_counts": inputs.get("_source_counts", {}),
             "ai_pipeline": {
                 "raw_count": len(inputs.get("ai_news", [])),
                 "trimmed_count": len(ai_raw_trimmed),
                 "irrelevant_dropped": ai_irrelevant_count,
+                "irrelevant_dropped_sample": ai_irrelevant_sample,
                 "ranked_count": len(ai_news_ranked),
                 "recent_count": len(ai_news_recent),
                 "high_impact_archive_count": len(ai_high_impact_archive),
@@ -441,11 +543,11 @@ if __name__ == "__main__":
                 dry_run=dry_run,
             ),
             "cron",
-            hour="8,20",
+            hour="9,18",
             minute=0,
             id="intel_flow_job",
         )
-        logger.info("Schedule mode enabled for 08:00 and 20:00.")
+        logger.info("Schedule mode enabled for 09:00 and 18:00.")
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):

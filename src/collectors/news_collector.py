@@ -8,6 +8,28 @@ from src.config import Config
 from src.utils.logger import logger
 
 
+def stock_news_keywords() -> list[str]:
+    """Symbols plus their company/product aliases, followed by sector themes."""
+    keywords: list[str] = []
+    for symbol in Config.US_STOCKS + Config.TW_STOCKS:
+        for keyword in (symbol, *Config.STOCK_NAME_ALIASES.get(symbol, [])):
+            if keyword not in keywords:
+                keywords.append(keyword)
+    for theme in (
+        "Nvidia Blackwell",
+        "TSMC 2nm",
+        "AI chip demand",
+        "Semiconductor supply chain",
+        "SpaceX IPO",
+        "Starlink subscribers",
+        "Earnings report",
+        "Price target",
+    ):
+        if theme not in keywords:
+            keywords.append(theme)
+    return keywords
+
+
 class NewsCollector:
     _NEWSAPI_Q_MAX_CHARS = 500
     _NEWSAPI_Q_BUDGET_CHARS = 450
@@ -16,17 +38,12 @@ class NewsCollector:
         self.api_key = Config.NEWS_API_KEY
 
     def fetch_stock_news(self) -> list[dict]:
-        domains = "reuters.com,bloomberg.com,wsj.com,cnbc.com,techcrunch.com,finance.yahoo.com"
-        stock_kws = Config.US_STOCKS + Config.TW_STOCKS + [
-            "Nvidia Blackwell",
-            "TSMC 2nm",
-            "AI chip demand",
-            "Semiconductor supply chain",
-            "Earnings report",
-            "Price target",
-        ]
-        return self._fetch_by_keywords(
-            stock_kws,
+        domains = (
+            "reuters.com,bloomberg.com,wsj.com,cnbc.com,techcrunch.com,finance.yahoo.com,"
+            "marketwatch.com,barrons.com,spacenews.com,space.com"
+        )
+        return self._fetch_keyword_batches(
+            stock_news_keywords(),
             domains=domains,
             page_size=10,
             days_back=Config.STOCK_NEWS_LOOKBACK_DAYS,
@@ -71,6 +88,7 @@ class NewsCollector:
             "Hugging Face",
             "GitHub Copilot",
         ]
+        keywords = [*Config.AI_MODEL_WATCH, *(k for k in keywords if k not in Config.AI_MODEL_WATCH)]
         broad = self._fetch_keyword_batches(
             keywords,
             domains=domains,

@@ -76,9 +76,24 @@ class DiscordSender:
         if not quotes:
             return "本輪未取得資料"
         return "\n\n".join(
-            f"**{quote['symbol']}**\n現:{self._format_quote_value(quote, 'price')} | 變:{self._format_quote_change(quote)}\n區:{self._format_quote_range(quote)}"
+            f"**{quote['symbol']}**\n現:{self._format_quote_value(quote, 'price')} | 變:{self._format_quote_change(quote)}{self._format_pct_suffix(quote.get('change_pct'))}\n區:{self._format_quote_range(quote)}{self._format_trend(quote)}"
             for quote in quotes
         )
+
+    def _format_pct_suffix(self, value) -> str:
+        if value is None:
+            return ""
+        return f" ({float(value):+.2f}%)"
+
+    def _format_trend(self, quote: dict) -> str:
+        parts = []
+        if quote.get("change_5d_pct") is not None:
+            parts.append(f"5日:{float(quote['change_5d_pct']):+.1f}%")
+        if quote.get("change_1m_pct") is not None:
+            parts.append(f"1月:{float(quote['change_1m_pct']):+.1f}%")
+        if quote.get("volume_ratio") is not None:
+            parts.append(f"量比:{float(quote['volume_ratio']):.2f}x")
+        return f"\n{' | '.join(parts)}" if parts else ""
 
     def _format_quote_value(self, quote: dict, key: str) -> str:
         value = quote.get(key)
