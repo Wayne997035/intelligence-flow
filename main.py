@@ -9,6 +9,7 @@ from pathlib import Path
 from src.ai.analyzer import AIAnalyzer
 from src.collectors.arxiv_collector import ArxivCollector
 from src.collectors.github_release_collector import GitHubReleaseCollector
+from src.collectors.google_news_collector import GoogleNewsCollector
 from src.collectors.hf_collector import HFCollector
 from src.collectors.news_collector import NewsCollector
 from src.collectors.official_ai_collector import OfficialAICollector
@@ -139,6 +140,55 @@ def attach_ai_appendix(report, selected_items: list, *, summarize_item=None) -> 
     attach_report_appendix(report, selected_items, summarize_item=summarize_item)
 
 
+def build_stock_priority() -> list[str]:
+    """Symbols interleaved with their aliases so a "SpaceX" headline ranks like "SPCX"."""
+    priority: list[str] = []
+    for symbol in Config.US_STOCKS + Config.TW_STOCKS:
+        for keyword in (symbol, *Config.STOCK_NAME_ALIASES.get(symbol, [])):
+            if keyword not in priority:
+                priority.append(keyword)
+    return priority
+
+
+def balance_stock_news(items: list) -> list:
+    """Interleave ranked stock news round-robin across watched symbols.
+
+    deduplicate_and_rank orders by the index of the first matched keyword, so
+    every NVDA headline would otherwise outrank every SPCX headline and the
+    later symbols in the watchlist would never reach the report's slots.
+    Items not tied to any symbol (sector themes) form their own trailing group.
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in items:
+        text = f"{item.title} {item.desc}".lower()
+        group = next(
+            (
+                symbol
+                for symbol in Config.US_STOCKS + Config.TW_STOCKS
+                if any(
+                    keyword.lower() in text or keyword in (item.tags or [])
+                    for keyword in (symbol, *Config.STOCK_NAME_ALIASES.get(symbol, []))
+                )
+            ),
+            "_other",
+        )
+        if group not in groups:
+            groups[group] = []
+            order.append(group)
+        groups[group].append(item)
+
+    if "_other" in order:
+        order.remove("_other")
+        order.append("_other")
+    balanced: list = []
+    while any(groups[group] for group in order):
+        for group in order:
+            if groups[group]:
+                balanced.append(groups[group].pop(0))
+    return balanced
+
+
 def merge_unique_items(*item_groups: list) -> list:
     merged: list = []
     seen_urls: set[str] = set()
@@ -186,12 +236,18 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
     arxiv_fetcher = ArxivCollector()
     official_fetcher = OfficialAICollector()
     github_release_fetcher = GitHubReleaseCollector()
+    google_news_fetcher = GoogleNewsCollector()
     return {
         "us_stocks": stock_fetcher.fetch_us_stocks(),
         "tw_stocks": stock_fetcher.fetch_tw_stocks(),
-        "stock_news": news_fetcher.fetch_stock_news(),
+        "stock_news": (
+            news_fetcher.fetch_stock_news()
+            + stock_fetcher.fetch_ticker_news()
+            + google_news_fetcher.fetch_stock_topics()
+        ),
         "ai_news": (
             news_fetcher.fetch_ai_tech_news()
+            + google_news_fetcher.fetch_ai_topics()
             + official_fetcher.fetch_updates()
             + github_release_fetcher.fetch_latest_releases()
             + tech_fetcher.fetch_all_community_ai()
@@ -223,7 +279,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         ttl_hours=Config.HISTORY_TTL_HOURS,
     )
 
-    stock_priority = Config.US_STOCKS + Config.TW_STOCKS
+    stock_priority = build_stock_priority()
     ai_priority = [
         "Claude",
         "Mythos",
@@ -279,11 +335,13 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         default_source_type="news",
     )
 
-    stock_news_recent = filter_recent_items(
-        stock_news_ranked,
-        max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
-        now=now,
-        require_published_at=True,
+    stock_news_recent = balance_stock_news(
+        filter_recent_items(
+            stock_news_ranked,
+            max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
+            now=now,
+            require_published_at=True,
+        )
     )
     ai_news_recent = filter_recent_items(
         ai_news_ranked,

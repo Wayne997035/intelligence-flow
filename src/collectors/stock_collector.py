@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import requests
 
 from src.config import Config
@@ -27,33 +29,111 @@ class StockCollector:
         for symbol in self.us_tickers:
             try:
                 ticker = yf.Ticker(symbol)
-                info = ticker.fast_info
-                hist = ticker.history(period="1d")
-                if hist.empty:
-                    continue
-                open_price = self._safe_float(hist["Open"].iloc[0])
-                low = self._safe_float(hist["Low"].iloc[0])
-                high = self._safe_float(hist["High"].iloc[0])
-                close = self._safe_float(hist["Close"].iloc[-1])
-                prev_close = self._safe_float(getattr(info, "previous_close", None), default=close)
-                current = close
-                change = current - prev_close
-                results.append(
-                    {
-                        "symbol": symbol,
-                        "price": round(current, 2),
-                        "change": f"{change:+.2f}",
-                        "range": f"{low:.2f}-{high:.2f}",
-                        "open": round(open_price, 2),
-                        "close": round(close, 2),
-                        "low": round(low, 2),
-                        "high": round(high, 2),
-                        "source": "yfinance",
-                    }
-                )
+                quote = self._quote_from_history(symbol, ticker.history(period="1mo"), source="yfinance")
+                if quote is not None:
+                    results.append(quote)
             except Exception as exc:  # pragma: no cover - live source failures
                 logger.error("Error fetching US stock %s: %s", symbol, exc)
         return results
+
+    def fetch_ticker_news(self, *, limit_per_symbol: int = 4) -> list[dict]:
+        """Per-symbol headlines from Yahoo Finance; needs no API key, so it
+        still yields stock news when NEWS_API_KEY is missing or rate limited."""
+        if yf is None or not Config.ENABLE_TICKER_NEWS:
+            return []
+
+        logger.info("Fetching per-ticker news...")
+        results: list[dict] = []
+        for symbol in self.us_tickers:
+            try:
+                raw_items = yf.Ticker(symbol).news or []
+            except Exception as exc:  # pragma: no cover - live source failures
+                logger.warning("Ticker news fetch failed for %s: %s", symbol, exc)
+                continue
+            picked = 0
+            for raw in raw_items:
+                item = self._normalize_ticker_news(symbol, raw)
+                if item is None:
+                    continue
+                results.append(item)
+                picked += 1
+                if picked >= limit_per_symbol:
+                    break
+        return results
+
+    def _normalize_ticker_news(self, symbol: str, raw: dict) -> dict | None:
+        # yfinance >= 0.2.50 nests fields under "content"; older releases are flat.
+        content = raw.get("content") if isinstance(raw.get("content"), dict) else raw
+        title = (content.get("title") or "").strip()
+        url = (
+            (content.get("canonicalUrl") or {}).get("url")
+            or (content.get("clickThroughUrl") or {}).get("url")
+            or content.get("link")
+            or ""
+        )
+        if not title or not url:
+            return None
+
+        published_at = content.get("pubDate") or content.get("displayTime")
+        if not published_at and content.get("providerPublishTime"):
+            published_at = datetime.fromtimestamp(int(content["providerPublishTime"]), tz=timezone.utc).isoformat()
+        provider = content.get("provider")
+        source_name = provider.get("displayName") if isinstance(provider, dict) else content.get("publisher")
+        return {
+            "title": title,
+            "url": url,
+            "desc": (content.get("summary") or content.get("description") or "").strip(),
+            "source_name": source_name or "Yahoo Finance",
+            "source_type": "news",
+            "published_at": published_at,
+            "tags": [symbol],
+        }
+
+    def _quote_from_history(self, symbol: str, hist, *, source: str) -> dict | None:
+        if hist is None or hist.empty:
+            return None
+
+        closes = [self._safe_float(value) for value in hist["Close"].tolist()]
+        current = closes[-1]
+        if current <= 0:
+            return None
+        prev_close = closes[-2] if len(closes) >= 2 else current
+        open_price = self._safe_float(hist["Open"].iloc[-1], default=current)
+        low = self._safe_float(hist["Low"].iloc[-1], default=current)
+        high = self._safe_float(hist["High"].iloc[-1], default=current)
+        change = current - prev_close
+
+        quote = {
+            "symbol": symbol,
+            "price": round(current, 2),
+            "change": f"{change:+.2f}",
+            "change_pct": self._pct(current, prev_close),
+            "range": f"{low:.2f}-{high:.2f}",
+            "open": round(open_price, 2),
+            "close": round(current, 2),
+            "low": round(low, 2),
+            "high": round(high, 2),
+            "source": source,
+        }
+        if len(closes) >= 6:
+            quote["change_5d_pct"] = self._pct(current, closes[-6])
+        if len(closes) >= 2:
+            quote["change_1m_pct"] = self._pct(current, closes[0])
+            quote["range_1m"] = f"{min(self._safe_float(v) for v in hist['Low'].tolist()):.2f}-{max(self._safe_float(v) for v in hist['High'].tolist()):.2f}"
+        if "Volume" in hist:
+            volumes = [self._safe_float(value) for value in hist["Volume"].tolist()]
+            quote["volume"] = int(volumes[-1])
+            prior = [value for value in volumes[:-1] if value > 0]
+            if prior and volumes[-1] > 0:
+                # >1 means today's volume runs above the 1-month average: a
+                # quick "is something happening" signal for the analyzer.
+                quote["volume_ratio"] = round(volumes[-1] / (sum(prior) / len(prior)), 2)
+        return quote
+
+    def _pct(self, current: float, base: float) -> float | None:
+        if not base:
+            return None
+        return round((current - base) / base * 100, 2)
 
     def fetch_tw_stocks(self) -> list[dict]:
         logger.info("Fetching TW stock data...")
@@ -106,6 +186,7 @@ class StockCollector:
                 "symbol": symbol,
                 "price": round(current, 2),
                 "change": f"{change:+.2f}",
+                "change_pct": self._pct(current, prev),
                 "range": f"{low:.2f}-{high:.2f}",
                 "open": round(open_price, 2),
                 "close": round(current, 2),
@@ -124,26 +205,7 @@ class StockCollector:
 
         try:
             ticker = yf.Ticker(f"{symbol}.TW")
-            hist = ticker.history(period="1d")
-            if hist.empty:
-                return None
-            open_price = self._safe_float(hist["Open"].iloc[-1])
-            low = self._safe_float(hist["Low"].iloc[-1])
-            high = self._safe_float(hist["High"].iloc[-1])
-            current = self._safe_float(hist["Close"].iloc[-1])
-            prev = self._safe_float(getattr(ticker.fast_info, "previous_close", None), default=current)
-            change = current - prev
-            return {
-                "symbol": symbol,
-                "price": round(current, 2),
-                "change": f"{change:+.2f}",
-                "range": f"{low:.2f}-{high:.2f}",
-                "open": round(open_price, 2),
-                "close": round(current, 2),
-                "low": round(low, 2),
-                "high": round(high, 2),
-                "source": "yfinance",
-            }
+            return self._quote_from_history(symbol, ticker.history(period="1mo"), source="yfinance")
         except Exception as exc:  # pragma: no cover - live source failures
             logger.warning("yfinance fallback failed for %s: %s", symbol, exc)
             return None

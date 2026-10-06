@@ -120,7 +120,8 @@ class AIAnalyzer:
             "news": [asdict(item) for item in news[:12]],
             "instructions": [
                 "回傳 JSON，禁止輸出 markdown 或額外說明。",
-                "summary 要總結盤勢、新聞主線與風險。",
+                "summary 要總結盤勢、新聞主線與風險；stocks 內的 change_pct / change_5d_pct / change_1m_pct / volume_ratio 是日、5日、1月漲跌幅與量比，請據此判斷趨勢與異常量能。",
+                "SPCX 是 SpaceX（2026 年 6 月於 Nasdaq 上市），若有 SpaceX / Starlink / Starship 新聞要特別點出對營收、估值或發射節奏的影響。",
                 "items 最多 7 筆，每筆要有 title,url,summary,insight。",
                 "insight 至少 2 句：先說事件代表的市場或產業意義，再補一個後續要觀察的估值、供應鏈、需求或風險訊號。",
                 "outlook 要給後續觀察重點，避免過度肯定的投資建議。",
@@ -319,7 +320,12 @@ class AIAnalyzer:
         stock_quotes: list[dict],
         news: list[IntelligenceItem],
     ) -> AnalyzedReport:
-        moves = [f"{quote['symbol']} {quote['price']} ({quote['change']})" for quote in stock_quotes]
+        moves = [
+            f"{quote['symbol']} {quote['price']} ({quote['change']}"
+            + (f", {float(quote['change_pct']):+.2f}%" if quote.get("change_pct") is not None else "")
+            + ")"
+            for quote in stock_quotes
+        ]
         source_summary = summarize_sources(news)
         items = [
             ReportItem(

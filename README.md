@@ -94,8 +94,17 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 | `AI_HIGH_IMPACT_LOOKBACK_DAYS` | AI 高衝擊延伸內容時間窗（預設 30） |
 | `ENABLE_HISTORY_DEDUP` | 跨輪去重（預設關閉） |
 | `NOTION_STATE_DB_ID` / `NOTION_STATE_DS_ID` | 跨輪去重狀態持久化用的 Notion database / data source id |
-| `US_STOCKS` / `TW_STOCKS` | 追蹤標的 |
+| `US_STOCKS` / `TW_STOCKS` | 追蹤標的（美股預設含 `SPCX` = SpaceX） |
+| `STOCK_NAME_ALIASES` | 代號 → 公司/產品名，用於新聞搜尋與排序，格式 `SPCX:SpaceX\|Starlink,NVDA:Nvidia` |
+| `STOCK_WATCH_TOPICS` / `AI_WATCH_TOPICS` | 透過 Google News RSS（免 key）額外追蹤的主題 |
+| `ENABLE_GOOGLE_NEWS` / `ENABLE_TICKER_NEWS` | 開關 Google News 主題 / Yahoo Finance 個股新聞（預設開） |
 | `TW_STOCK_SOURCE_ORDER` | 台股來源順序（預設 `yfinance,mis`） |
+
+## 股市情報來源
+
+- 報價：yfinance 取近一個月日線，計算日 / 5 日 / 1 月漲跌幅、1 月區間、量比（今日量 ÷ 近月均量）
+- 新聞：NewsAPI（代號 + 公司別名）+ Yahoo Finance 個股新聞 + Google News 主題
+- 排序後依標的 round-robin 交錯，避免清單前面的標的（例如 NVDA）把後面的標的（例如 SPCX）擠出報告
 
 ## AI 情報策略（摘要）
 

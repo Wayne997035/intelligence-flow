@@ -65,6 +65,26 @@ class OfficialAICollector:
                     "responses",
                 ],
             },
+            {
+                "name": "Google DeepMind Blog",
+                "url": "https://deepmind.google/blog/rss.xml",
+                "keywords": ["gemini", "gemma", "model", "agent", "veo", "genie", "alphafold", "research"],
+            },
+            {
+                "name": "Google AI Blog",
+                "url": "https://blog.google/technology/ai/rss/",
+                "keywords": ["gemini", "notebooklm", "gemma", "model", "agent", "ai mode", "deep research"],
+            },
+            {
+                "name": "Hugging Face Blog",
+                "url": "https://huggingface.co/blog/feed.xml",
+                "keywords": ["model", "release", "agent", "smolagents", "open source", "llm", "inference"],
+            },
+            {
+                "name": "Microsoft AI Blog",
+                "url": "https://blogs.microsoft.com/ai/feed/",
+                "keywords": ["copilot", "model", "agent", "azure ai", "foundry", "mai-"],
+            },
         ]
         self.html_sources = [
             {

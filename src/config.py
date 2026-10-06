@@ -32,6 +32,21 @@ def _get_list(name: str, default: list[str]) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _get_alias_map(name: str, default: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Parse `SYMBOL:Alias A|Alias B,SYMBOL2:Alias` into {symbol: [aliases]}."""
+    value = os.getenv(name)
+    if not value:
+        return default
+    parsed: dict[str, list[str]] = {}
+    for entry in value.split(","):
+        symbol, _, raw_aliases = entry.partition(":")
+        symbol = symbol.strip()
+        aliases = [alias.strip() for alias in raw_aliases.split("|") if alias.strip()]
+        if symbol and aliases:
+            parsed[symbol] = aliases
+    return parsed or default
+
+
 def _get_env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
     if value is None:
@@ -82,8 +97,42 @@ class Config:
     STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"
     ARTIFACT_FILE = _get_env("ARTIFACT_FILE", "data/latest_run.json") or "data/latest_run.json"
 
-    US_STOCKS = _get_list("US_STOCKS", ["NVDA", "TSLA", "AMD", "GOOG", "AAPL"])
+    US_STOCKS = _get_list("US_STOCKS", ["NVDA", "TSLA", "AMD", "GOOG", "AAPL", "SPCX"])
     TW_STOCKS = _get_list("TW_STOCKS", ["0050", "2330", "00692"])
+    # Ticker symbols alone are poor news search terms ("SPCX" rarely appears in
+    # headlines, "SpaceX"/"Starlink" do), so each watched symbol maps to the
+    # company/product names used for news queries and ranking.
+    STOCK_NAME_ALIASES = _get_alias_map(
+        "STOCK_NAME_ALIASES",
+        {
+            "NVDA": ["Nvidia"],
+            "TSLA": ["Tesla"],
+            "AMD": ["AMD"],
+            "GOOG": ["Alphabet", "Google"],
+            "AAPL": ["Apple"],
+            "SPCX": ["SpaceX", "Starlink", "Starship"],
+            "2330": ["TSMC"],
+        },
+    )
+    # Extra topics tracked on the stock side via Google News RSS (no API key).
+    STOCK_WATCH_TOPICS = _get_list(
+        "STOCK_WATCH_TOPICS",
+        ["SpaceX stock", "SpaceX Starlink", "SpaceX Starship launch", "Nvidia earnings", "TSMC"],
+    )
+    AI_WATCH_TOPICS = _get_list(
+        "AI_WATCH_TOPICS",
+        [
+            "Anthropic Claude",
+            "OpenAI GPT",
+            "Google Gemini",
+            "xAI Grok",
+            "Meta Llama",
+            "DeepSeek",
+            "AI agent launch",
+        ],
+    )
+    ENABLE_GOOGLE_NEWS = _get_bool("ENABLE_GOOGLE_NEWS", True)
+    ENABLE_TICKER_NEWS = _get_bool("ENABLE_TICKER_NEWS", True)
     TW_STOCK_SOURCE_ORDER = _get_list("TW_STOCK_SOURCE_ORDER", ["yfinance", "mis"])
     AI_GITHUB_RELEASE_REPOS = _get_list(
         "AI_GITHUB_RELEASE_REPOS",
