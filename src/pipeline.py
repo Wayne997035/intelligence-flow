@@ -122,6 +122,14 @@ def is_model_launch(text: str) -> bool:
     return _MODEL_LAUNCH_PATTERN.search(lowered) is not None and any(verb in lowered for verb in _LAUNCH_VERBS)
 
 
+def launch_story_key(text: str) -> str | None:
+    """"gemini 4" for any headline about the Gemini 4 launch, else None."""
+    if not is_model_launch(text):
+        return None
+    match = _MODEL_LAUNCH_PATTERN.search(text.lower())
+    return re.sub(r"[-\s]+", " ", match.group(0)).strip() if match else None
+
+
 def normalize_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip()
 

@@ -102,3 +102,40 @@ class TestLiveSmokeRegressions(unittest.TestCase):
             limit=10,
         )
         self.assertIn("Gemini 4 Argon", ranked[0].title)
+
+
+class TestArticleDateFallback(unittest.TestCase):
+    def test_extracts_published_time_from_article_meta(self):
+        from src.collectors.official_ai_collector import OfficialAICollector
+
+        collector = OfficialAICollector()
+        html = '<html><head><meta property="article:published_time" content="2026-10-01T16:00:00+00:00"></head></html>'
+        self.assertTrue(collector._extract_article_published_at(html).startswith("2026-10-01"))
+        json_ld = '<script type="application/ld+json">{"datePublished": "2026-09-30T08:00:00Z"}</script>'
+        self.assertTrue(collector._extract_article_published_at(json_ld).startswith("2026-09-30"))
+        self.assertIsNone(collector._extract_article_published_at("<html></html>"))
+
+    def test_undated_feed_entry_uses_article_date(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from src.collectors import official_ai_collector
+        from src.collectors.official_ai_collector import OfficialAICollector
+
+        collector = OfficialAICollector()
+        feed = SimpleNamespace(entries=[{"title": "Introducing Gemini agents", "link": "https://developers.googleblog.com/x", "summary": "gemini agent"}])
+        with patch.object(official_ai_collector, "feedparser") as mock_feedparser, patch.object(
+            collector, "_fetch_article_published_at", return_value="2026-10-01T00:00:00+00:00"
+        ) as mock_lookup:
+            mock_feedparser.parse.return_value = feed
+            items = collector._fetch_single_feed_source(
+                source_name="Google Developers Blog", url="https://x.test/feed", keywords=["gemini"], limit=4
+            )
+        mock_lookup.assert_called_once()
+        self.assertEqual(items[0]["published_at"], "2026-10-01T00:00:00+00:00")
+
+    def test_gone_microsoft_feed_removed(self):
+        from src.collectors.official_ai_collector import OfficialAICollector
+
+        names = [source["name"] for source in OfficialAICollector().feed_sources]
+        self.assertNotIn("Microsoft AI Blog", names)

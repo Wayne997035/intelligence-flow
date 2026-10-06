@@ -85,8 +85,30 @@ class TestStockQuoteMetrics(unittest.TestCase):
         self.assertTrue(flat["published_at"].startswith("2026-"))
         self.assertIsNone(collector._normalize_ticker_news("SPCX", {"content": {"title": "no url"}}))
 
-    def test_fetch_ticker_news_skipped_without_yfinance(self):
-        with patch.object(stock_collector, "yf", None):
+    def test_fetch_ticker_news_falls_back_to_yahoo_rss(self):
+        fake_feed = SimpleNamespace(
+            entries=[
+                {
+                    "title": "SpaceX stock climbs to highest since June",
+                    "link": "https://finance.yahoo.com/news/spacex-climbs",
+                    "published": "Mon, 05 Oct 2026 20:04:38 +0000",
+                    "summary": "Shares rose 7.6%.",
+                }
+            ]
+        )
+        with patch.object(stock_collector, "yf", None), patch.object(
+            stock_collector, "feedparser"
+        ) as mock_feedparser, patch.object(Config, "US_STOCKS", ["SPCX"]):
+            mock_feedparser.parse.return_value = fake_feed
+            collector = StockCollector()
+            items = collector.fetch_ticker_news()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["tags"], ["SPCX"])
+        self.assertEqual(items[0]["published_at"], "2026-10-05T20:04:38+00:00")
+        self.assertIn("s=SPCX", mock_feedparser.parse.call_args.args[0])
+
+    def test_fetch_ticker_news_disabled(self):
+        with patch.object(Config, "ENABLE_TICKER_NEWS", False):
             self.assertEqual(StockCollector().fetch_ticker_news(), [])
 
 
@@ -164,3 +186,23 @@ class TestDiscordQuoteTrend(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLaunchStoryDedupe(unittest.TestCase):
+    def test_main_report_keeps_one_item_per_model_launch(self):
+        items = [
+            IntelligenceItem(title=title, url=f"https://x.test/{i}", source_type="news")
+            for i, title in enumerate(
+                [
+                    "Google rolls out Gemini 4 Argon, its most advanced AI model",
+                    "Google announces Gemini 4 flagship AI model after months of delays",
+                    "Anthropic releases Claude Sonnet 5.5",
+                    "Barclays expands use of Claude",
+                ]
+            )
+        ]
+        selected = main.select_ai_report_candidates(items, limit=10)
+        titles = [item.title for item in selected]
+        self.assertEqual(sum("Gemini 4" in title for title in titles), 1)
+        self.assertIn("Anthropic releases Claude Sonnet 5.5", titles)
+        self.assertIn("Barclays expands use of Claude", titles)

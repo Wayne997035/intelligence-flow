@@ -57,6 +57,8 @@ except Exception as exc:  # diagnostics only
 ticker_news = stocks.fetch_ticker_news()
 show("Yahoo ticker news", ticker_news)
 show("  of which SPCX", [item for item in ticker_news if "SPCX" in item.get("tags", [])])
+if not ticker_news:
+    failures.append("ticker news empty (yfinance and Yahoo RSS)")
 
 google = GoogleNewsCollector()
 stock_topics = google.fetch_stock_topics()
@@ -79,8 +81,10 @@ try:
             print("  entry keys:", sorted(entries[0].keys()))
 except Exception as exc:  # diagnostics only
     print("feed diagnostics error:", repr(exc))
-if any(not item.get("published_at") for item in feed_items):
-    print("WARNING: official feed items without published_at:", [i["title"] for i in feed_items if not i.get("published_at")])
+undated = [item["title"] for item in feed_items if not item.get("published_at")]
+if undated:
+    print("official feed items without published_at:", undated)
+    failures.append(f"{len(undated)} official feed items undated")
 html_items = official._fetch_html_updates(4)
 show("Official RSS feeds", feed_items, limit=30)
 show("Official HTML listings", html_items, limit=20)

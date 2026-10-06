@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -12,8 +13,19 @@ try:
 except ImportError:  # pragma: no cover - optional dependency in dry-run
     yf = None
 
+try:
+    import feedparser
+except ImportError:  # pragma: no cover - optional dependency in dry-run
+    feedparser = None
+
 
 class StockCollector:
+    _YAHOO_RSS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+    _BROWSER_UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+
     def __init__(self):
         self.us_tickers = Config.US_STOCKS
         self.tw_tickers = Config.TW_STOCKS
@@ -38,27 +50,68 @@ class StockCollector:
 
     def fetch_ticker_news(self, *, limit_per_symbol: int = 4) -> list[dict]:
         """Per-symbol headlines from Yahoo Finance; needs no API key, so it
-        still yields stock news when NEWS_API_KEY is missing or rate limited."""
-        if yf is None or not Config.ENABLE_TICKER_NEWS:
+        still yields stock news when NEWS_API_KEY is missing or rate limited.
+
+        yfinance's `.news` came back empty for every symbol in 2026-10 (yfinance
+        1.7.0), so Yahoo's public headline RSS is used as the fallback source.
+        """
+        if not Config.ENABLE_TICKER_NEWS:
             return []
 
         logger.info("Fetching per-ticker news...")
         results: list[dict] = []
         for symbol in self.us_tickers:
-            try:
-                raw_items = yf.Ticker(symbol).news or []
-            except Exception as exc:  # pragma: no cover - live source failures
-                logger.warning("Ticker news fetch failed for %s: %s", symbol, exc)
+            items = self._fetch_ticker_news_yfinance(symbol, limit_per_symbol)
+            if not items:
+                items = self._fetch_ticker_news_rss(symbol, limit_per_symbol)
+            results.extend(items)
+        return results
+
+    def _fetch_ticker_news_yfinance(self, symbol: str, limit: int) -> list[dict]:
+        if yf is None:
+            return []
+        try:
+            raw_items = yf.Ticker(symbol).news or []
+        except Exception as exc:  # pragma: no cover - live source failures
+            logger.warning("yfinance news fetch failed for %s: %s", symbol, exc)
+            return []
+        items = [item for item in (self._normalize_ticker_news(symbol, raw) for raw in raw_items) if item]
+        return items[:limit]
+
+    def _fetch_ticker_news_rss(self, symbol: str, limit: int) -> list[dict]:
+        if feedparser is None:
+            return []
+        url = self._YAHOO_RSS_URL.format(symbol=symbol)
+        try:
+            feed = feedparser.parse(url, agent=self._BROWSER_UA)
+        except Exception as exc:  # pragma: no cover - feed parser edge cases
+            logger.warning("Yahoo RSS fetch failed for %s: %s", symbol, exc)
+            return []
+        results: list[dict] = []
+        for entry in getattr(feed, "entries", []):
+            title = (entry.get("title") or "").strip()
+            link = (entry.get("link") or "").strip()
+            if not title or not link:
                 continue
-            picked = 0
-            for raw in raw_items:
-                item = self._normalize_ticker_news(symbol, raw)
-                if item is None:
-                    continue
-                results.append(item)
-                picked += 1
-                if picked >= limit_per_symbol:
-                    break
+            published_at = None
+            if entry.get("published"):
+                try:
+                    published_at = parsedate_to_datetime(entry["published"]).astimezone(timezone.utc).isoformat()
+                except (TypeError, ValueError):
+                    published_at = entry["published"]
+            results.append(
+                {
+                    "title": title,
+                    "url": link,
+                    "desc": (entry.get("summary") or "").strip(),
+                    "source_name": "Yahoo Finance",
+                    "source_type": "news",
+                    "published_at": published_at,
+                    "tags": [symbol],
+                }
+            )
+            if len(results) >= limit:
+                break
         return results
 
     def _normalize_ticker_news(self, symbol: str, raw: dict) -> dict | None:

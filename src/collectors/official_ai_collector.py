@@ -80,11 +80,6 @@ class OfficialAICollector:
                 "url": "https://huggingface.co/blog/feed.xml",
                 "keywords": ["model", "release", "agent", "smolagents", "open source", "llm", "inference"],
             },
-            {
-                "name": "Microsoft AI Blog",
-                "url": "https://blogs.microsoft.com/ai/feed/",
-                "keywords": ["copilot", "model", "agent", "azure ai", "foundry", "mai-"],
-            },
         ]
         self.html_sources = [
             {
@@ -276,6 +271,9 @@ class OfficialAICollector:
                 continue
             if not self._matches_keywords(title, summary, keywords):
                 continue
+            published_at = self._extract_published_at(entry) or self._fetch_article_published_at(
+                link, source_name=source_name
+            )
             results.append(
                 {
                     "title": f"[Official] {title}",
@@ -283,7 +281,7 @@ class OfficialAICollector:
                     "desc": BeautifulSoup(summary[:220], "html.parser").get_text(" ", strip=True),
                     "source_name": source_name,
                     "source_type": "official_news",
-                    "published_at": self._extract_published_at(entry),
+                    "published_at": published_at,
                 }
             )
             count += 1
@@ -492,6 +490,42 @@ class OfficialAICollector:
                 }
             )
         return results
+
+    def _fetch_article_published_at(self, url: str, *, source_name: str) -> str | None:
+        """Fallback for feeds that omit dates (Google Developers Blog's feed has
+        none since its 2026 move): read the article's own publish metadata.
+        Undated items are otherwise discarded by the recency filter."""
+        try:
+            html = self._fetch_page_text(url, source_name=source_name)
+        except Exception as exc:  # pragma: no cover - live source failures
+            logger.warning("Article date lookup failed for %s: %s", url, exc)
+            return None
+        return self._extract_article_published_at(html)
+
+    def _extract_article_published_at(self, html: str) -> str | None:
+        soup = BeautifulSoup(html, "html.parser")
+        for attr, name in (
+            ("property", "article:published_time"),
+            ("property", "og:published_time"),
+            ("name", "article:published_time"),
+            ("itemprop", "datePublished"),
+            ("name", "date"),
+            ("name", "publish-date"),
+        ):
+            tag = soup.find("meta", attrs={attr: name})
+            if tag and tag.get("content"):
+                normalized = self._normalize_datetime(tag["content"])
+                if normalized:
+                    return normalized
+        match = re.search(r'"datePublished"\s*:\s*"([^"]+)"', html)
+        if match:
+            normalized = self._normalize_datetime(match.group(1))
+            if normalized:
+                return normalized
+        time_tag = soup.find("time", attrs={"datetime": True})
+        if time_tag:
+            return self._normalize_datetime(time_tag["datetime"])
+        return None
 
     def _fetch_page_text(self, url: str, *, source_name: str) -> str:
         headers = self._build_browser_headers(url, include_brotli=False)

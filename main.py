@@ -23,6 +23,7 @@ from src.pipeline import (
     deduplicate_and_rank,
     filter_recent_items,
     is_relevant_ai_item,
+    launch_story_key,
     normalize_item,
     parse_published_at,
 )
@@ -49,6 +50,22 @@ def trim_descriptions(items: list[dict], max_length: int) -> list[dict]:
 
 
 def select_ai_report_candidates(items: list, limit: int) -> list:
+    """Quota-based pick for the main AI report, at most one item per model
+    launch: three outlets covering "Gemini 4 Argon" should take one slot, not
+    three. The extra coverage still reaches the Notion appendix."""
+    seen_launches: set[str] = set()
+    unique_story_items: list = []
+    for item in items:
+        story = launch_story_key(f"{item.title} {item.desc}")
+        if story:
+            if story in seen_launches:
+                continue
+            seen_launches.add(story)
+        unique_story_items.append(item)
+    return _select_ai_report_candidates(unique_story_items, limit)
+
+
+def _select_ai_report_candidates(items: list, limit: int) -> list:
     quotas = [
         ("official_news", 6),
         ("news", 4),
