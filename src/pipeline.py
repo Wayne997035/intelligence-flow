@@ -122,9 +122,13 @@ def is_model_launch(text: str) -> bool:
     return _MODEL_LAUNCH_PATTERN.search(lowered) is not None and any(verb in lowered for verb in _LAUNCH_VERBS)
 
 
-def launch_story_key(text: str) -> str | None:
-    """"gemini 4" for any headline about the Gemini 4 launch, else None."""
-    if not is_model_launch(text):
+def launch_story_key(text: str, *, source_type: str | None = None) -> str | None:
+    """"gemini 4" for any headline about the Gemini 4 launch, else None.
+
+    Provider posts often skip launch verbs ("Gemini 4 Argon: our next era of
+    frontier intelligence"), so official/model_release items only need the
+    versioned model name."""
+    if source_type not in {"official_news", "model_release"} and not is_model_launch(text):
         return None
     match = _MODEL_LAUNCH_PATTERN.search(text.lower())
     return re.sub(r"[-\s]+", " ", match.group(0)).strip() if match else None

@@ -201,8 +201,17 @@ class TestLaunchStoryDedupe(unittest.TestCase):
                 ]
             )
         ]
+        items.insert(
+            0,
+            IntelligenceItem(
+                title="[Official] Gemini 4 Argon: our next era of frontier intelligence",
+                url="https://deepmind.google/gemini-4",
+                source_type="official_news",
+            ),
+        )
         selected = main.select_ai_report_candidates(items, limit=10)
         titles = [item.title for item in selected]
         self.assertEqual(sum("Gemini 4" in title for title in titles), 1)
+        self.assertTrue(titles[0].startswith("[Official] Gemini 4"))
         self.assertIn("Anthropic releases Claude Sonnet 5.5", titles)
         self.assertIn("Barclays expands use of Claude", titles)

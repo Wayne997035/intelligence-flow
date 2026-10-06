@@ -56,7 +56,7 @@ def select_ai_report_candidates(items: list, limit: int) -> list:
     seen_launches: set[str] = set()
     unique_story_items: list = []
     for item in items:
-        story = launch_story_key(f"{item.title} {item.desc}")
+        story = launch_story_key(f"{item.title} {item.desc}", source_type=item.source_type)
         if story:
             if story in seen_launches:
                 continue
