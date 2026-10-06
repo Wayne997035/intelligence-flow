@@ -282,6 +282,8 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     stock_priority = build_stock_priority()
     ai_priority = [
         "Claude",
+        "Opus",
+        "Sonnet",
         "Mythos",
         "Glasswing",
         "Gemini",
@@ -321,12 +323,15 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     ai_raw_trimmed = trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
     ai_input_items: list = []
     ai_irrelevant_count = 0
+    ai_irrelevant_sample: list[str] = []
     for item in ai_raw_trimmed:
         normalized = normalize_item(item)
         if is_relevant_ai_item(normalized):
             ai_input_items.append(item)
         else:
             ai_irrelevant_count += 1
+            if len(ai_irrelevant_sample) < 12:
+                ai_irrelevant_sample.append(normalized.title)
     ai_news_ranked = deduplicate_and_rank(
         ai_input_items,
         ai_priority,
@@ -414,6 +419,7 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
                 "raw_count": len(inputs.get("ai_news", [])),
                 "trimmed_count": len(ai_raw_trimmed),
                 "irrelevant_dropped": ai_irrelevant_count,
+                "irrelevant_dropped_sample": ai_irrelevant_sample,
                 "ranked_count": len(ai_news_ranked),
                 "recent_count": len(ai_news_recent),
                 "high_impact_archive_count": len(ai_high_impact_archive),

@@ -123,7 +123,9 @@ class Config:
         "AI_WATCH_TOPICS",
         [
             "Anthropic Claude",
+            "Claude Opus release",
             "OpenAI GPT",
+            "OpenAI new model",
             "Google Gemini",
             "xAI Grok",
             "Meta Llama",

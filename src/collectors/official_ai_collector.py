@@ -90,11 +90,15 @@ class OfficialAICollector:
             {
                 "name": "Anthropic News",
                 "url": "https://www.anthropic.com/news",
-                "link_prefixes": ["/news/", "/glasswing", "/project/glasswing"],
+                # Model launches live at top-level paths such as /claude-opus-5-5.
+                "link_prefixes": ["/news/", "/claude-", "/glasswing", "/project/glasswing"],
                 "limit": 8,
                 "keywords": [
                     "claude",
                     "anthropic",
+                    "opus",
+                    "sonnet",
+                    "haiku",
                     "model",
                     "agent",
                     "managed agents",

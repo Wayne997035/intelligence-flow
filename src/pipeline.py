@@ -74,6 +74,26 @@ _AI_INCIDENT_CONTEXT_TERMS = (
 )
 
 
+# Version-tagged launches from core providers, e.g. "Claude Opus 5.5",
+# "GPT-5.5", "Gemini 3.5 Pro", "Grok 5". These are the headline events of
+# the AI report and must never lose ranking to generic news.
+_MODEL_LAUNCH_PATTERN = re.compile(
+    r"\b(?:claude(?:\s+(?:opus|sonnet|haiku))?|opus|sonnet|haiku|gpt|gemini|gemma|grok|o\d)[-\s]?\d+(?:\.\d+)?\b"
+)
+_LAUNCH_VERBS = ("introducing", "launch", "release", "unveil", "announce", "available", "rolls out", "roll out")
+
+
+def contains_term(text: str, term: str) -> bool:
+    """Whole-word match: plain substring checks made "war" hit "software",
+    "forward" and "hardware", silently dropping official model launches."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text) is not None
+
+
+def is_model_launch(text: str) -> bool:
+    lowered = text.lower()
+    return _MODEL_LAUNCH_PATTERN.search(lowered) is not None and any(verb in lowered for verb in _LAUNCH_VERBS)
+
+
 def normalize_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip()
 
@@ -278,11 +298,13 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
         "war",
         "department of war",
     ]
-    if has_core_provider and any(keyword in text for keyword in _AI_INCIDENT_TERMS) and any(
-        keyword in text for keyword in _AI_INCIDENT_CONTEXT_TERMS
+    if has_core_provider and any(contains_term(text, keyword) for keyword in _AI_INCIDENT_TERMS) and any(
+        contains_term(text, keyword) for keyword in _AI_INCIDENT_CONTEXT_TERMS
     ):
         return True
-    if any(keyword in text for keyword in negative_keywords):
+    if is_model_launch(text):
+        return True
+    if any(contains_term(text, keyword) for keyword in negative_keywords):
         return False
     if item.source_type in {"official_news", "model_release", "research", "github_release", "github_repo"}:
         return True
@@ -307,8 +329,10 @@ def ai_impact_score(item: IntelligenceItem) -> int:
         score += 80
     if has_core_provider and any(keyword in text for keyword in _HIGH_IMPACT_AI_TERMS):
         score += 35
-    if has_core_provider and any(keyword in text for keyword in _AI_INCIDENT_TERMS):
+    if has_core_provider and any(contains_term(text, keyword) for keyword in _AI_INCIDENT_TERMS):
         score += 30
+    if is_model_launch(text):
+        score += 60
     if item.source_type in {"official_news", "research"} and score:
         score += 10
     return score

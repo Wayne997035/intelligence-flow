@@ -151,6 +151,7 @@ class AIAnalyzer:
                 "items 最多 12 筆，每筆要有 title,url,summary,insight。",
                 "insight 至少 2 句：先說這則更新為何重要，再補一句它對產品化、商業化、開發流程或生態系的後續影響。",
                 "優先挑選官方發布、GitHub release、快速成長的專案、研究論文，不要挑法律糾紛或社會新聞。",
+                "新模型發表（例如 Claude Opus / Sonnet、GPT、Gemini、Grok 帶版本號的發布）一定要列入 items 並排在最前面。",
                 "若有版本號、模型名稱、產品名，必須完整保留。",
                 "outlook 要指出接下來值得追蹤的官方來源或技術方向。",
             ],
@@ -279,7 +280,13 @@ class AIAnalyzer:
         try:
             payload = json.loads(cleaned)
         except json.JSONDecodeError:
-            return None
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start < 0 or end <= start:
+                return None
+            try:
+                payload = json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError:
+                return None
         if not isinstance(payload, dict):
             return None
 
@@ -961,6 +968,9 @@ class AIAnalyzer:
                 response = self.groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": prompt}],
                     model=Config.GROQ_MODEL,
+                    # Without JSON mode Llama often prefixes prose, which failed
+                    # parsing and silently dropped the run to local synthesis.
+                    response_format={"type": "json_object"},
                 )
                 return response.choices[0].message.content
             except Exception as exc:  # pragma: no cover - live provider failure
