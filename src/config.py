@@ -90,8 +90,8 @@ class Config:
     AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
     AI_HIGH_IMPACT_LOOKBACK_DAYS = int(os.getenv("AI_HIGH_IMPACT_LOOKBACK_DAYS", "30"))
     HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
-    # 26h covers both schedule gaps (10:30->20:00 = 9.5h, 20:00->next 10:30 =
-    # 14.5h) with buffer for a delayed run; 24h alone would let the
+    # 26h covers both schedule gaps (09:00->18:00 = 9h, 18:00->next 09:00 =
+    # 15h) with buffer for a delayed run; 24h alone would let the
     # overnight gap's dedup window lapse right at the boundary.
     HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "26"))
     STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"

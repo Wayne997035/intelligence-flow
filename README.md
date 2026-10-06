@@ -69,8 +69,8 @@ touch .env.local
 
 GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 
-- Asia/Taipei 10:30 daily
-- Asia/Taipei 20:00 daily
+- Asia/Taipei 09:00 daily
+- Asia/Taipei 18:00 daily
 
 排程使用 GitHub Actions `schedule.timezone`，時區設定為 `Asia/Taipei`。
 

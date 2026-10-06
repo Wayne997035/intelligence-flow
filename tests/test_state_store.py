@@ -87,7 +87,7 @@ class TestStateStore(unittest.TestCase):
             self.assertEqual(skipped_again, 0)
 
     def test_ttl_26h_still_active_at_20_hours(self):
-        # Overnight schedule gap is 14.5h (20:00 -> next 10:30); 20h is
+        # Overnight schedule gap is 15h (18:00 -> next 09:00); 20h is
         # comfortably inside the 26h TTL, so a duplicate seen 20h ago MUST
         # still be recognised and skipped.
         with tempfile.TemporaryDirectory() as tmpdir:

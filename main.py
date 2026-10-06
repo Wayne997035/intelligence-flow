@@ -514,11 +514,11 @@ if __name__ == "__main__":
                 dry_run=dry_run,
             ),
             "cron",
-            hour="8,20",
+            hour="9,18",
             minute=0,
             id="intel_flow_job",
         )
-        logger.info("Schedule mode enabled for 08:00 and 20:00.")
+        logger.info("Schedule mode enabled for 09:00 and 18:00.")
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):
