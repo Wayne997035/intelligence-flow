@@ -126,7 +126,7 @@ class Config:
             "Claude Opus release",
             "OpenAI GPT-6",
             "OpenAI new model",
-            "Google Gemini",
+            "Google Gemini 4",
             "xAI Grok",
             "Meta Llama",
             "DeepSeek",
@@ -138,7 +138,17 @@ class Config:
     # hardcoding it in the collector.
     AI_MODEL_WATCH = _get_list(
         "AI_MODEL_WATCH",
-        ["Claude Opus", "Claude Sonnet", "GPT-6", "GPT-6 Astra", "GPT-6 Sol", "Gemini Pro", "Grok"],
+        [
+            "Claude Opus",
+            "Claude Sonnet",
+            "Claude Fable",
+            "Claude Mythos",
+            "GPT-6",
+            "GPT-6 Astra",
+            "GPT-6.1 Sol",
+            "Gemini 4",
+            "Grok",
+        ],
     )
     ENABLE_GOOGLE_NEWS = _get_bool("ENABLE_GOOGLE_NEWS", True)
     ENABLE_TICKER_NEWS = _get_bool("ENABLE_TICKER_NEWS", True)

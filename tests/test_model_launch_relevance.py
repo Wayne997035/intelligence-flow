@@ -73,3 +73,32 @@ class TestGptReleaseFamilies(unittest.TestCase):
         item = _item("OpenAI rolls out GPT-6 Astra", "Available to developers via software APIs.", "news")
         self.assertTrue(is_relevant_ai_item(item))
         self.assertGreater(ai_impact_score(item), 0)
+
+
+class TestLiveSmokeRegressions(unittest.TestCase):
+    """Cases observed in the live smoke run on 2026-10-06."""
+
+    def test_provider_published_post_without_keywords_is_relevant(self):
+        item = normalize_item(
+            {"title": "Introducing dots", "url": "https://openai.com/index/dots", "source_name": "OpenAI", "source_type": "news"}
+        )
+        self.assertTrue(is_relevant_ai_item(item))
+
+    def test_fable_and_mythos_launches_are_detected(self):
+        from src.pipeline import is_model_launch
+
+        self.assertTrue(is_model_launch("Introducing Claude Fable 5.1 and Claude Mythos 5.1"))
+        self.assertTrue(is_model_launch("Google rolls out Gemini 4 Argon"))
+
+    def test_model_launch_ranks_ahead_of_subreddit_named_chatter(self):
+        from src.pipeline import deduplicate_and_rank
+
+        ranked = deduplicate_and_rank(
+            [
+                {"title": "[Reddit r/ClaudeAI] Update: my human has been nerfed again", "url": "https://reddit.test/1", "source_type": "community", "published_at": "2026-10-05T00:00:00Z"},
+                {"title": "Google rolls out Gemini 4 Argon, its most advanced AI model", "url": "https://news.test/2", "source_type": "news", "published_at": "2026-09-30T00:00:00Z"},
+            ],
+            ["Claude", "Gemini"],
+            limit=10,
+        )
+        self.assertIn("Gemini 4 Argon", ranked[0].title)

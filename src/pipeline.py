@@ -38,6 +38,18 @@ _CORE_PROVIDER_TERMS = (
     "xai",
     "grok",
 )
+_PROVIDER_PUBLISHERS = {
+    "openai",
+    "anthropic",
+    "google",
+    "google deepmind",
+    "the keyword",
+    "xai",
+    "x.ai",
+    "meta",
+    "meta ai",
+    "hugging face",
+}
 _HIGH_IMPACT_AI_TERMS = (
     "mythos",
     "glasswing",
@@ -78,7 +90,7 @@ _AI_INCIDENT_CONTEXT_TERMS = (
 # "GPT-5.5", "Gemini 3.5 Pro", "Grok 5". These are the headline events of
 # the AI report and must never lose ranking to generic news.
 _MODEL_LAUNCH_PATTERN = re.compile(
-    r"\b(?:claude(?:\s+(?:opus|sonnet|haiku))?|opus|sonnet|haiku|gpt|gemini|gemma|grok|llama|qwen|deepseek|o\d)[-\s]?(?:v)?\d+(?:\.\d+)?\b"
+    r"\b(?:claude(?:\s+(?:opus|sonnet|haiku|fable|mythos))?|opus|sonnet|haiku|fable|mythos|gpt|gemini|gemma|grok|llama|qwen|deepseek|o\d)[-\s]?(?:v)?\d+(?:\.\d+)?\b"
 )
 _LAUNCH_VERBS = ("introducing", "launch", "release", "unveil", "announce", "available", "rolls out", "roll out")
 
@@ -205,12 +217,11 @@ def normalize_item(
         )
 
     if priority_keywords:
+        # Ignore source prefixes like "[Reddit r/ClaudeAI]": the subreddit name
+        # alone must not give an off-topic post top keyword priority.
+        priority_text = f"{re.sub(r'^\[[^\]]*\]\s*', '', normalized.title)} {normalized.desc}".lower()
         normalized.priority = next(
-            (
-                index
-                for index, keyword in enumerate(priority_keywords)
-                if keyword.lower() in f"{normalized.title} {normalized.desc}".lower()
-            ),
+            (index for index, keyword in enumerate(priority_keywords) if keyword.lower() in priority_text),
             999,
         )
     return normalized
@@ -322,6 +333,10 @@ def is_relevant_ai_item(item: IntelligenceItem) -> bool:
         return True
     if any(contains_term(text, keyword) for keyword in negative_keywords):
         return False
+    # Posts published by a provider itself ("Introducing dots" from OpenAI)
+    # often carry no generic AI keyword in the headline.
+    if normalize_text(item.source_name).lower() in _PROVIDER_PUBLISHERS:
+        return True
     if item.source_type in {"official_news", "model_release", "research", "github_release", "github_repo"}:
         return True
     if item.source_type == "community" and item.metadata.get("recent_feature_signal"):
@@ -424,8 +439,12 @@ def deduplicate_and_rank(
 
     ranked = list(unique_items.values())
     reverse_order_index = {id(item): key for key, item in unique_items.items()}
+    def _launch_rank(item: IntelligenceItem) -> int:
+        return 0 if is_model_launch(f"{normalize_text(item.title)} {normalize_text(item.desc)}") else 1
+
     ranked.sort(
         key=lambda item: (
+            _launch_rank(item),
             item.priority,
             _provider_priority(item),
             -ai_impact_score(item),

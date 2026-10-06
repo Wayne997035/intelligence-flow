@@ -41,6 +41,19 @@ if not any(quote["symbol"] == "SPCX" for quote in quotes):
 if quotes and not all("change_pct" in quote for quote in quotes):
     failures.append("quotes missing change_pct")
 
+try:
+    import yfinance as yf
+
+    raw_news = yf.Ticker("SPCX").news
+    print(f"\n### raw yfinance SPCX news: type={type(raw_news).__name__} len={len(raw_news or [])} yfinance={yf.__version__}")
+    if raw_news:
+        first = raw_news[0]
+        print("  first keys:", list(first.keys()))
+        if isinstance(first.get("content"), dict):
+            print("  content keys:", list(first["content"].keys()))
+except Exception as exc:  # diagnostics only
+    print("raw yfinance news error:", repr(exc))
+
 ticker_news = stocks.fetch_ticker_news()
 show("Yahoo ticker news", ticker_news)
 show("  of which SPCX", [item for item in ticker_news if "SPCX" in item.get("tags", [])])
@@ -55,6 +68,19 @@ if not stock_topics or not ai_topics:
 
 official = OfficialAICollector()
 feed_items = official._fetch_feed_updates(4)
+try:
+    import feedparser
+
+    for source in official.feed_sources:
+        feed = feedparser.parse(source["url"])
+        entries = getattr(feed, "entries", [])
+        print(f"\n### feed {source['name']}: status={feed.get('status')} entries={len(entries)} bozo={feed.get('bozo')}")
+        if entries:
+            print("  entry keys:", sorted(entries[0].keys()))
+except Exception as exc:  # diagnostics only
+    print("feed diagnostics error:", repr(exc))
+if any(not item.get("published_at") for item in feed_items):
+    print("WARNING: official feed items without published_at:", [i["title"] for i in feed_items if not i.get("published_at")])
 html_items = official._fetch_html_updates(4)
 show("Official RSS feeds", feed_items, limit=30)
 show("Official HTML listings", html_items, limit=20)
