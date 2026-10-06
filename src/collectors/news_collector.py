@@ -73,11 +73,6 @@ class NewsCollector:
             "Codex",
             "Anthropic",
             "Claude Code",
-            "Claude Opus",
-            "Claude Sonnet",
-            "GPT-5",
-            "Gemini 3",
-            "Grok 5",
             "Ultraplan",
             "Google Gemini",
             "NotebookLM",
@@ -93,6 +88,7 @@ class NewsCollector:
             "Hugging Face",
             "GitHub Copilot",
         ]
+        keywords = [*Config.AI_MODEL_WATCH, *(k for k in keywords if k not in Config.AI_MODEL_WATCH)]
         broad = self._fetch_keyword_batches(
             keywords,
             domains=domains,

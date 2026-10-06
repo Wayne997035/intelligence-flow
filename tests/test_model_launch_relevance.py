@@ -43,3 +43,33 @@ class TestResponseParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGptReleaseFamilies(unittest.TestCase):
+    def test_gpt6_variants_are_distinct_families(self):
+        from src.pipeline import content_dedupe_key, openai_release_family
+
+        self.assertEqual(openai_release_family("introducing gpt-6 astra"), "openai-gpt-6-astra")
+        self.assertEqual(openai_release_family("gpt-6 sol and luna"), "openai-gpt-6-sol")
+        self.assertEqual(openai_release_family("gpt-6 is here"), "openai-gpt-6")
+        astra = content_dedupe_key(title="Introducing GPT-6 Astra", url="https://openai.com/index/gpt-6-astra")
+        sol = content_dedupe_key(title="Introducing GPT-6 Sol", url="https://openai.com/index/gpt-6-sol")
+        self.assertNotEqual(astra, sol)
+
+    def test_deduplicate_keeps_astra_and_sol_separately(self):
+        from src.pipeline import deduplicate_and_rank
+
+        ranked = deduplicate_and_rank(
+            [
+                {"title": "Introducing GPT-6 Astra", "url": "https://openai.com/index/gpt-6-astra", "source_name": "OpenAI", "source_type": "official_news", "published_at": "2026-09-04T00:00:00Z"},
+                {"title": "Introducing GPT-6 Sol", "url": "https://openai.com/index/gpt-6-sol", "source_name": "OpenAI", "source_type": "official_news", "published_at": "2026-09-22T00:00:00Z"},
+            ],
+            ["GPT"],
+            limit=10,
+        )
+        self.assertEqual(len(ranked), 2)
+
+    def test_gpt6_launch_is_relevant_and_high_impact(self):
+        item = _item("OpenAI rolls out GPT-6 Astra", "Available to developers via software APIs.", "news")
+        self.assertTrue(is_relevant_ai_item(item))
+        self.assertGreater(ai_impact_score(item), 0)

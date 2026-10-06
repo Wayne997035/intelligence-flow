@@ -2,6 +2,11 @@ name: Intel Flow Schedule
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只收集與分析，不發送 Discord/Notion（結果以 artifact 上傳）"
+        type: boolean
+        default: false
   schedule:
     # Asia/Taipei 10:30 daily
     - cron: "30 10 * * *"
@@ -54,4 +59,22 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run intel flow once
+        if: ${{ !inputs.dry_run }}
         run: python main.py --once --live-delivery
+
+      # Manual verification path: hits every real source and the AI providers,
+      # but delivery stays blocked (DRY_RUN defaults to true without
+      # --live-delivery) and history dedup is skipped for dry runs.
+      - name: Run intel flow once (dry run)
+        if: ${{ inputs.dry_run }}
+        env:
+          DRY_RUN: "true"
+        run: python main.py --once
+
+      - name: Upload run artifact
+        if: ${{ always() && inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-run
+          path: data/latest_run.json
+          if-no-files-found: warn

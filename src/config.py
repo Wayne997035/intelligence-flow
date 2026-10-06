@@ -124,7 +124,7 @@ class Config:
         [
             "Anthropic Claude",
             "Claude Opus release",
-            "OpenAI GPT",
+            "OpenAI GPT-6",
             "OpenAI new model",
             "Google Gemini",
             "xAI Grok",
@@ -132,6 +132,13 @@ class Config:
             "DeepSeek",
             "AI agent launch",
         ],
+    )
+    # Current flagship model names used as exact-phrase news queries. Version
+    # numbers go stale quickly, so keep this list editable via env instead of
+    # hardcoding it in the collector.
+    AI_MODEL_WATCH = _get_list(
+        "AI_MODEL_WATCH",
+        ["Claude Opus", "Claude Sonnet", "GPT-6", "GPT-6 Astra", "GPT-6 Sol", "Gemini Pro", "Grok"],
     )
     ENABLE_GOOGLE_NEWS = _get_bool("ENABLE_GOOGLE_NEWS", True)
     ENABLE_TICKER_NEWS = _get_bool("ENABLE_TICKER_NEWS", True)

@@ -78,9 +78,25 @@ _AI_INCIDENT_CONTEXT_TERMS = (
 # "GPT-5.5", "Gemini 3.5 Pro", "Grok 5". These are the headline events of
 # the AI report and must never lose ranking to generic news.
 _MODEL_LAUNCH_PATTERN = re.compile(
-    r"\b(?:claude(?:\s+(?:opus|sonnet|haiku))?|opus|sonnet|haiku|gpt|gemini|gemma|grok|o\d)[-\s]?\d+(?:\.\d+)?\b"
+    r"\b(?:claude(?:\s+(?:opus|sonnet|haiku))?|opus|sonnet|haiku|gpt|gemini|gemma|grok|llama|qwen|deepseek|o\d)[-\s]?(?:v)?\d+(?:\.\d+)?\b"
 )
 _LAUNCH_VERBS = ("introducing", "launch", "release", "unveil", "announce", "available", "rolls out", "roll out")
+
+
+# Named tiers ship as separate launches (GPT-6 Astra on Sep 4, Sol/Luna on
+# Sep 22), so they must not collapse into one "gpt-6" release family.
+_GPT_VARIANTS = ("astra", "sol", "luna", "pro", "mini", "nano", "codex", "thinking", "turbo")
+_GPT_FAMILY_PATTERN = re.compile(
+    r"\bgpt[- ](\d+(?:\.\d+)?)(?:[- ](" + "|".join(_GPT_VARIANTS) + r"))?\b"
+)
+
+
+def openai_release_family(text: str) -> str | None:
+    match = _GPT_FAMILY_PATTERN.search(text)
+    if not match:
+        return None
+    version, variant = match.group(1), match.group(2)
+    return f"openai-gpt-{version}-{variant}" if variant else f"openai-gpt-{version}"
 
 
 def contains_term(text: str, term: str) -> bool:
@@ -147,9 +163,9 @@ def content_dedupe_key(
         ]
     ).lower()
 
-    openai_model_match = re.search(r"\bgpt[- ](\d+(?:\.\d+)?)\b", haystack)
-    if openai_model_match and ("openai" in haystack or "openai.com" in canonical_url):
-        return f"release-family:openai-gpt-{openai_model_match.group(1)}"
+    release_family = openai_release_family(haystack)
+    if release_family and ("openai" in haystack or "openai.com" in canonical_url):
+        return f"release-family:{release_family}"
 
     title_key = re.sub(r"[^a-z0-9]+", "", normalized_title.lower())[:120]
     if title_key and len(title_key) >= 24:
@@ -240,9 +256,9 @@ def is_low_signal_item(item: IntelligenceItem) -> bool:
             if family_match:
                 item.metadata.setdefault("model_family_key", f"gemma-4-{family_match.group(1)}")
 
-    openai_model_match = re.search(r"\bgpt[- ](\d+(?:\.\d+)?)\b", lowered)
-    if openai_model_match and ("openai" in source_name or "openai.com" in url):
-        item.metadata.setdefault("release_family_key", f"openai-gpt-{openai_model_match.group(1)}")
+    release_family = openai_release_family(lowered)
+    if release_family and ("openai" in source_name or "openai.com" in url):
+        item.metadata.setdefault("release_family_key", release_family)
 
     return False
 

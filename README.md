@@ -74,6 +74,8 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 
 排程使用 GitHub Actions `schedule.timezone`，時區設定為 `Asia/Taipei`。
 
+手動驗證：在 Actions 頁面對 `Intel Flow Schedule` 按 **Run workflow** 並勾選 `dry_run`，會用真實來源與 AI 分析跑一輪但不發送 Discord/Notion，結果 `data/latest_run.json` 以 artifact `latest-run` 上傳，可檢查 `meta.ai_pipeline.irrelevant_dropped_sample` 等欄位。
+
 ## 設定重點
 
 環境變數來源優先順序：
@@ -97,6 +99,7 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 | `US_STOCKS` / `TW_STOCKS` | 追蹤標的（美股預設含 `SPCX` = SpaceX） |
 | `STOCK_NAME_ALIASES` | 代號 → 公司/產品名，用於新聞搜尋與排序，格式 `SPCX:SpaceX\|Starlink,NVDA:Nvidia` |
 | `STOCK_WATCH_TOPICS` / `AI_WATCH_TOPICS` | 透過 Google News RSS（免 key）額外追蹤的主題 |
+| `AI_MODEL_WATCH` | 目前旗艦模型名稱（新聞精準搜尋用），新世代發表時更新即可，例如 `Claude Opus,GPT-6,GPT-6 Astra` |
 | `ENABLE_GOOGLE_NEWS` / `ENABLE_TICKER_NEWS` | 開關 Google News 主題 / Yahoo Finance 個股新聞（預設開） |
 | `TW_STOCK_SOURCE_ORDER` | 台股來源順序（預設 `yfinance,mis`） |
 
