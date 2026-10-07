@@ -63,6 +63,15 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     requests = None
 
+try:
+    from src.utils.redact import redact
+except ImportError:  # pragma: no cover - standalone copy of this module
+    def redact(text: object) -> str:  # noqa: D103 - minimal fallback
+        value = str(text)
+        value = re.sub(r"(https?://[^/\s'\"]+)[^\s'\"]*", r"\1/…", value)
+        value = re.sub(r"\borg_[A-Za-z0-9]{6,}", "org_***", value)
+        return re.sub(r"(account\s*['\"]?)[A-Za-z0-9_\-]{8,}", r"\1***", value, flags=re.I)
+
 PROVIDERS = ("gemini", "groq", "nvidia")
 AUTO = "auto"
 
@@ -102,10 +111,25 @@ class LLMSettings:
     provider_order: tuple[str, ...] = ("gemini", "nvidia", "groq")
     # See module docstring: NVIDIA's free tier is trial / evaluation only.
     nvidia_enabled: bool = False
-    gemini_timeout_seconds: float = 30
+    # Long reports can take minutes to generate, so a request is given time
+    # to finish: providers switch on an explicit failure (429 / 503 / 404 /
+    # invalid output), which comes back within seconds, not on a short
+    # client timeout. The timeout only guards against a connection that never
+    # answers (2026-10-07: a 90s cut-off abandoned requests still being
+    # written and every provider ended up failing).
+    gemini_timeout_seconds: float = 600
     gemini_max_attempts: int = 5
-    groq_timeout_seconds: float = 60
-    nvidia_timeout_seconds: float = 90
+    groq_timeout_seconds: float = 600
+    groq_max_attempts: int = 3
+    nvidia_timeout_seconds: float = 600
+    # Wall-clock cap per provider per request before moving to the next one.
+    provider_budget_seconds: float = 600
+    # Probe-based model choice (choose_best_model) before the first real call.
+    # Off by default: on free tiers the probes spend rate limits and daily
+    # quotas, and a small probe can pick a model that then fails the
+    # full-size request (qwen on Groq, 2026-10-07). Ranked order + failover
+    # is used instead; the AI health check evaluates models on real prompts.
+    probe_model_selection: bool = False
     # The NVIDIA catalog lists many models the account cannot call (404
     # "Function ... Not found for account"); those fail in ~0.1s, so auto
     # mode walks this many candidates before giving up.
@@ -167,8 +191,11 @@ class LLMRouter:
             "groq": settings.groq_model or AUTO,
             "nvidia": settings.nvidia_model or AUTO,
         }
-        self._gemini_candidates: list[str] | None = None
-        self._nvidia_candidates: list[str] | None = None
+        # Ranked candidates per provider (resolved lazily), models that cannot
+        # be called this run, and the model that last answered per provider.
+        self._candidates: dict[str, list[str] | None] = {name: None for name in PROVIDERS}
+        self._dead: set[tuple[str, str]] = set()
+        self.last_model: dict[str, str] = {}
         # Optional task-specific probe used to pick models (see
         # set_model_selector); runs at most once per provider, and only when
         # the chain actually reaches that provider.
@@ -195,7 +222,9 @@ class LLMRouter:
         if not (Groq and self.settings.groq_api_key):
             return None
         try:
-            return Groq(api_key=self.settings.groq_api_key, timeout=self.settings.groq_timeout_seconds)
+            # The router does its own failover; the SDK's built-in retries waited
+            # 47s on a 429 that would never succeed (2026-10-07).
+            return Groq(api_key=self.settings.groq_api_key, timeout=self.settings.groq_timeout_seconds, max_retries=0)
         except Exception as exc:  # pragma: no cover - SDK construction failure
             self.log.warning("Groq client setup failed: %s", exc)
             return None
@@ -207,6 +236,8 @@ class LLMRouter:
         self._selector = (probe_prompt, score)
 
     def _maybe_select(self, provider: str) -> None:
+        if not self.settings.probe_model_selection:
+            return
         if self._selector is None or provider in self._selection_done:
             return
         if self.models.get(provider, AUTO).lower() != AUTO:
@@ -242,7 +273,7 @@ class LLMRouter:
                 continue
             text = self.try_provider(name, prompt, json_schema=json_schema, errors=result.errors)
             if text:
-                result.text, result.provider, result.model = text, name, self.models[name]
+                result.text, result.provider, result.model = text, name, self.last_model.get(name, self.models[name])
                 return result
         return result
 
@@ -262,44 +293,93 @@ class LLMRouter:
             self.log.exception("AI provider %s crashed", name)
         return None
 
+    # ------------------------------------------------------- candidate walk
+    def _walk(self, provider: str, call: Callable[[str], str | None], errors: list[str]) -> str | None:
+        """Try this provider's candidate models in order until one answers.
+
+        Every failure (rate limit, overload, timeout, retired model, bad
+        output) moves on to the next candidate; the provider as a whole gets
+        `provider_budget_seconds`, after which the chain moves to the next
+        provider instead of waiting out more timeouts. Models that cannot be
+        called at all (404 / exhausted daily quota) are skipped for the rest
+        of the process; the model that answers is tried first next time.
+        """
+        label = _LABELS[provider]
+        deadline = time.monotonic() + self.settings.provider_budget_seconds
+        cap = max(1, _MAX_ATTEMPTS[provider](self.settings))
+        tried: set[str] = set()
+        while len(tried) < cap:
+            # Re-read the order each time: a pinned model that turns out to be
+            # retired falls back to the auto-ranked candidates.
+            remaining = [model for model in self.attempt_order(provider) if model not in tried]
+            if not remaining:
+                break
+            if time.monotonic() >= deadline:
+                errors.append(f"{label}: 超過 {self.settings.provider_budget_seconds:.0f} 秒時間上限，換下一家")
+                self.log.warning("%s exceeded its time budget; moving to the next provider.", label)
+                break
+            model = remaining[0]
+            tried.add(model)
+            try:
+                text = call(model)
+                if not text or not text.strip():
+                    raise RuntimeError("empty response")
+            except Exception as exc:
+                self.log.warning("%s %s failed: %s", label, model, exc)
+                errors.append(short_error(f"{label}({model})", exc))
+                if _is_unusable_for_run(exc):
+                    self._dead.add((provider, model))
+                continue
+            self._promote(provider, model)
+            self.last_model[provider] = model
+            return text
+        return None
+
+    def attempt_order(self, provider: str) -> list[str]:
+        pinned = self.models[provider]
+        if pinned.lower() != AUTO and (provider, pinned) not in self._dead:
+            return [pinned]
+        if self._candidates.get(provider) is None:
+            ranked = {"gemini": self._gemini_ranked, "groq": self.groq_candidates, "nvidia": self.nvidia_candidates}[
+                provider
+            ]()
+            self._candidates[provider] = ranked
+            self.log.info("%s candidates: %s", _LABELS[provider], ", ".join(ranked[:12]))
+        usable = [model for model in self._candidates[provider] if (provider, model) not in self._dead]
+        return usable[: max(1, _MAX_ATTEMPTS[provider](self.settings))]
+
+    def _promote(self, provider: str, model: str) -> None:
+        candidates = self._candidates.get(provider)
+        if candidates and model in candidates and candidates[0] != model:
+            candidates.remove(model)
+            candidates.insert(0, model)
+            self.log.info("%s model in use: %s", _LABELS[provider], model)
+
     # ---------------------------------------------------------------- gemini
     def _try_gemini(self, prompt: str, json_schema: dict | None, errors: list[str]) -> str | None:
         if self.gemini_client is None:
             return None
-        for model in self.gemini_attempt_order():
-            try:
-                config = None
-                if genai_types is not None:
-                    config = genai_types.GenerateContentConfig(
-                        response_mime_type="application/json" if json_schema else None,
-                        response_schema=json_schema,
-                    )
-                response = self.gemini_client.models.generate_content(model=model, contents=prompt, config=config)
-                text = getattr(response, "text", None)
-                if not text:
-                    raise RuntimeError("empty response")
-            except Exception as exc:
-                self.log.warning("Gemini %s failed: %s", model, exc)
-                errors.append(short_error(f"Gemini({model})", exc))
-                continue
-            if model != self.models["gemini"]:
-                self.log.info("Gemini model in use: %s", model)
-            # Stick with the model that answered for the rest of the process.
-            self.models["gemini"] = model
-            self._gemini_candidates = [model]
-            return text
-        return None
+
+        def call(model: str) -> str | None:
+            config = None
+            if genai_types is not None:
+                config = genai_types.GenerateContentConfig(
+                    response_mime_type="application/json" if json_schema else None,
+                    response_schema=json_schema,
+                )
+            response = self.gemini_client.models.generate_content(model=model, contents=prompt, config=config)
+            return getattr(response, "text", None)
+
+        return self._walk("gemini", call, errors)
 
     def gemini_attempt_order(self) -> list[str]:
-        if self.models["gemini"].lower() != AUTO:
-            return [self.models["gemini"]]
-        if self._gemini_candidates is None:
-            ranked = self.gemini_candidates()
-            if _GEMINI_FALLBACK_ALIAS not in ranked:
-                ranked.append(_GEMINI_FALLBACK_ALIAS)
-            self._gemini_candidates = ranked
-            self.log.info("Gemini auto candidates: %s", ", ".join(ranked))
-        return self._gemini_candidates[: max(1, self.settings.gemini_max_attempts)]
+        return self.attempt_order("gemini")
+
+    def _gemini_ranked(self) -> list[str]:
+        ranked = self.gemini_candidates()
+        if _GEMINI_FALLBACK_ALIAS not in ranked:
+            ranked.append(_GEMINI_FALLBACK_ALIAS)
+        return ranked
 
     def gemini_candidates(self) -> list[str]:
         """General Flash models this key can call: newest stable first, then
@@ -331,42 +411,17 @@ class LLMRouter:
         if self.groq_client is None:
             return None
         self._maybe_select("groq")
-        if self.models["groq"].lower() == AUTO:
-            selected = (self.groq_candidates() or [None])[0]
-            if not selected:
-                errors.append("Groq: 找不到可用的對話模型")
-                return None
-            self.models["groq"] = selected
-            self.log.info("Groq model auto-selected: %s", selected)
-        try:
-            return self._groq_chat(prompt)
-        except Exception as exc:
-            if not _is_model_not_found(exc):
-                self.log.error("Groq failed: %s", exc)
-                errors.append(short_error(f"Groq({self.models['groq']})", exc))
-                return None
-            retired = self.models["groq"]
-            replacement = next((model for model in self.groq_candidates() if model != retired), None)
-            if not replacement:
-                errors.append(short_error(f"Groq({retired})", exc))
-                return None
-            self.log.warning("Groq model %s unavailable; switching to %s.", retired, replacement)
-            self.models["groq"] = replacement
-            try:
-                return self._groq_chat(prompt)
-            except Exception as retry_exc:
-                self.log.error("Groq failed with %s: %s", replacement, retry_exc)
-                errors.append(short_error(f"Groq({replacement})", retry_exc))
-                return None
 
-    def _groq_chat(self, prompt: str) -> str | None:
-        response = self.groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=self.models["groq"],
-            # Without JSON mode models often prefix prose around the JSON.
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content
+        def call(model: str) -> str | None:
+            response = self.groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+                # Without JSON mode models often prefix prose around the JSON.
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content
+
+        return self._walk("groq", call, errors)
 
     def groq_candidates(self) -> list[str]:
         if self.groq_client is None:
@@ -387,26 +442,8 @@ class LLMRouter:
             self.log.info("NVIDIA skipped: free API Catalog is trial/evaluation-only (nvidia_enabled is false).")
             return None
         self._maybe_select("nvidia")
-        for model in self.nvidia_attempt_order():
-            text = self._nvidia_chat(model, prompt, errors)
-            if text:
-                if model != self.models["nvidia"]:
-                    self.log.info("NVIDIA model in use: %s", model)
-                self.models["nvidia"] = model
-                self._nvidia_candidates = [model]
-                return text
-        return None
 
-    def nvidia_attempt_order(self) -> list[str]:
-        if self.models["nvidia"].lower() != AUTO:
-            return [self.models["nvidia"]]
-        if self._nvidia_candidates is None:
-            self._nvidia_candidates = self.nvidia_candidates()
-            self.log.info("NVIDIA auto candidates: %s", ", ".join(self._nvidia_candidates[:12]))
-        return self._nvidia_candidates[: max(1, self.settings.nvidia_max_attempts)]
-
-    def _nvidia_chat(self, model: str, prompt: str, errors: list[str]) -> str | None:
-        try:
+        def call(model: str) -> str | None:
             response = self.http.post(
                 f"{self.settings.nvidia_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.settings.nvidia_api_key}", "Accept": "application/json"},
@@ -420,14 +457,12 @@ class LLMRouter:
             )
             if response.status_code >= 400:
                 raise RuntimeError(f"{response.status_code} {response.text[:200]}")
-            content = strip_reasoning(response.json()["choices"][0]["message"]["content"])
-            if not content:
-                raise RuntimeError("empty response")
-            return content
-        except Exception as exc:
-            self.log.warning("NVIDIA %s failed: %s", model, exc)
-            errors.append(short_error(f"NVIDIA({model})", exc))
-            return None
+            return strip_reasoning(response.json()["choices"][0]["message"]["content"])
+
+        return self._walk("nvidia", call, errors)
+
+    def nvidia_attempt_order(self) -> list[str]:
+        return self.attempt_order("nvidia")
 
     def nvidia_candidates(self) -> list[str]:
         if not (self.settings.nvidia_api_key and self.http):
@@ -452,6 +487,28 @@ class LLMRouter:
             # family/size order as the tie-breaker.
             ranked.sort(key=lambda model_id: -(created.get(model_id) or 0))
         return ranked
+
+
+_LABELS = {"gemini": "Gemini", "groq": "Groq", "nvidia": "NVIDIA"}
+_MAX_ATTEMPTS = {
+    "gemini": lambda settings: settings.gemini_max_attempts,
+    "groq": lambda settings: settings.groq_max_attempts,
+    "nvidia": lambda settings: settings.nvidia_max_attempts,
+}
+
+
+def _is_unusable_for_run(exc: Exception) -> bool:
+    """Errors that will not clear within this run: the model does not exist
+    for this account or its daily free quota is used up."""
+    text = str(exc)
+    lowered = text.lower()
+    return (
+        "404" in text
+        or "model_not_found" in lowered
+        or "no longer available" in lowered
+        or ("resource_exhausted" in lowered and "per day" in lowered.replace("perday", "per day"))
+        or "requestsperday" in lowered
+    )
 
 
 # --------------------------------------------------------- model selection
@@ -483,7 +540,8 @@ def choose_best_model(
         return None, log
     original_timeout = router.settings.nvidia_timeout_seconds
     router.settings.nvidia_timeout_seconds = probe_timeout_seconds
-    best: tuple[tuple, str] | None = None
+    scored: list[tuple[tuple, str]] = []
+    unusable: list[str] = []
     responsive = calls = 0
     try:
         for model in candidates():
@@ -499,27 +557,27 @@ def choose_best_model(
                 time.sleep(pause_seconds)
             if not text:
                 log.append(f"{model}: {'；'.join(errors) or 'no answer'}")
-                if not any(" 404" in error for error in errors):
+                if any(" 404" in error for error in errors):
+                    unusable.append(model)
+                else:
                     responsive += 1
                 continue
             responsive += 1
             quality = score(text)
             log.append(f"{model}: {elapsed:.1f}s score={quality}")
-            if quality is None:
-                continue
-            key = (tuple(quality), -elapsed)
-            if best is None or key > best[0]:
-                best = (key, model)
+            if quality is not None:
+                scored.append(((tuple(quality), -elapsed), model))
     finally:
         router.settings.nvidia_timeout_seconds = original_timeout
         router.models[provider] = AUTO
-        if provider == "nvidia":
-            router._nvidia_candidates = None
-    if best is None:
+    if not scored:
         return None, log
-    router.models[provider] = best[1]
-    if provider == "nvidia":
-        router._nvidia_candidates = [best[1]]
+    ranked = [model for _, model in sorted(scored, reverse=True)]
+    # Best-scoring models first, then the rest in their original order so the
+    # walk still has fallbacks when the chosen model fails a full request.
+    rest = [model for model in (router._candidates.get(provider) or candidates()) if model not in ranked]
+    router._candidates[provider] = ranked + [model for model in rest if model not in unusable]
+    best = (None, ranked[0])
     router.log.info("%s model chosen by probe: %s", provider, best[1])
     return best[1], log
 
@@ -553,7 +611,7 @@ def strip_reasoning(content: str | None) -> str | None:
 
 
 def short_error(provider: str, exc: Exception) -> str:
-    text = str(exc) or type(exc).__name__
+    text = redact(str(exc) or type(exc).__name__)
     if "timeout" in type(exc).__name__.lower() or "timed out" in text.lower():
         return f"{provider}: 逾時無回應"
     match = re.search(r"'message':\s*'([^']+)'", text)
@@ -563,6 +621,3 @@ def short_error(provider: str, exc: Exception) -> str:
     return f"{prefix}: {detail[:120]}"
 
 
-def _is_model_not_found(exc: Exception) -> bool:
-    text = str(exc)
-    return "model_not_found" in text or ("404" in text and "model" in text.lower())
