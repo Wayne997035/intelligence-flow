@@ -18,18 +18,34 @@ if ENV_FILE != ".env":
     load_dotenv(PROJECT_ROOT / ".env")
 
 
+# GitHub Actions passes an unset repository variable (`${{ vars.X }}`) as an
+# empty string, so empty must mean "use the default" for every type below.
+
+
 def _get_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
+    value = (os.getenv(name) or "").strip().lower()
+    if not value:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return value in {"1", "true", "yes", "on"}
+
+
+def _get_int(name: str, default: int) -> int:
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        print(f"[config] {name}={value!r} is not an integer; using {default}.")
+        return default
 
 
 def _get_list(name: str, default: list[str]) -> list[str]:
     value = os.getenv(name)
-    if not value:
+    if not value or not value.strip():
         return default
-    return [part.strip() for part in value.split(",") if part.strip()]
+    parsed = [part.strip() for part in value.split(",") if part.strip()]
+    return parsed or default
 
 
 def _get_alias_map(name: str, default: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -99,16 +115,16 @@ class Config:
     ENABLE_HISTORY_DEDUP = _get_bool("ENABLE_HISTORY_DEDUP", False)
     WRITE_ARTIFACTS = _get_bool("WRITE_ARTIFACTS", True)
 
-    MAX_DESC_LENGTH = int(os.getenv("MAX_DESC_LENGTH", "220"))
-    INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "15"))
-    STOCK_NEWS_LOOKBACK_DAYS = int(os.getenv("STOCK_NEWS_LOOKBACK_DAYS", "7"))
-    AI_NEWS_LOOKBACK_DAYS = int(os.getenv("AI_NEWS_LOOKBACK_DAYS", "7"))
-    AI_HIGH_IMPACT_LOOKBACK_DAYS = int(os.getenv("AI_HIGH_IMPACT_LOOKBACK_DAYS", "30"))
-    HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "2000"))
+    MAX_DESC_LENGTH = _get_int("MAX_DESC_LENGTH", 220)
+    INTERVAL_MINUTES = _get_int("INTERVAL_MINUTES", 15)
+    STOCK_NEWS_LOOKBACK_DAYS = _get_int("STOCK_NEWS_LOOKBACK_DAYS", 7)
+    AI_NEWS_LOOKBACK_DAYS = _get_int("AI_NEWS_LOOKBACK_DAYS", 7)
+    AI_HIGH_IMPACT_LOOKBACK_DAYS = _get_int("AI_HIGH_IMPACT_LOOKBACK_DAYS", 30)
+    HISTORY_LIMIT = _get_int("HISTORY_LIMIT", 2000)
     # 26h covers both schedule gaps (09:00->18:00 = 9h, 18:00->next 09:00 =
     # 15h) with buffer for a delayed run; 24h alone would let the
     # overnight gap's dedup window lapse right at the boundary.
-    HISTORY_TTL_HOURS = int(os.getenv("HISTORY_TTL_HOURS", "26"))
+    HISTORY_TTL_HOURS = _get_int("HISTORY_TTL_HOURS", 26)
     STATE_FILE = _get_env("STATE_FILE", "data/run_state.json") or "data/run_state.json"
     ARTIFACT_FILE = _get_env("ARTIFACT_FILE", "data/latest_run.json") or "data/latest_run.json"
 

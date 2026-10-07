@@ -40,14 +40,37 @@ jobs:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       # Optional repo variables (Settings → Variables) to switch models
       # without a code change; empty falls back to the defaults in config.py.
-      AI_MODEL: ${{ vars.AI_MODEL }}
-      GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-      NVIDIA_MODEL: ${{ vars.NVIDIA_MODEL }}
+      # ---- Tunable from GitHub: Settings → Secrets and variables → Actions.
+      # Each setting is read from Variables first, then Secrets; leave both
+      # unset to use the default in src/config.py.
+      # Watchlist (comma separated)
+      US_STOCKS: ${{ vars.US_STOCKS || secrets.US_STOCKS }}
+      TW_STOCKS: ${{ vars.TW_STOCKS || secrets.TW_STOCKS }}
+      # SYMBOL:Alias A|Alias B,SYMBOL2:Alias (names used for news search)
+      STOCK_NAME_ALIASES: ${{ vars.STOCK_NAME_ALIASES || secrets.STOCK_NAME_ALIASES }}
+      STOCK_WATCH_TOPICS: ${{ vars.STOCK_WATCH_TOPICS || secrets.STOCK_WATCH_TOPICS }}
+      TW_STOCK_SOURCE_ORDER: ${{ vars.TW_STOCK_SOURCE_ORDER || secrets.TW_STOCK_SOURCE_ORDER }}
+      # AI news focus
+      AI_WATCH_TOPICS: ${{ vars.AI_WATCH_TOPICS || secrets.AI_WATCH_TOPICS }}
+      AI_MODEL_WATCH: ${{ vars.AI_MODEL_WATCH || secrets.AI_MODEL_WATCH }}
+      AI_GITHUB_RELEASE_REPOS: ${{ vars.AI_GITHUB_RELEASE_REPOS || secrets.AI_GITHUB_RELEASE_REPOS }}
+      # Time windows
+      STOCK_NEWS_LOOKBACK_DAYS: ${{ vars.STOCK_NEWS_LOOKBACK_DAYS || secrets.STOCK_NEWS_LOOKBACK_DAYS }}
+      AI_NEWS_LOOKBACK_DAYS: ${{ vars.AI_NEWS_LOOKBACK_DAYS || secrets.AI_NEWS_LOOKBACK_DAYS }}
+      AI_HIGH_IMPACT_LOOKBACK_DAYS: ${{ vars.AI_HIGH_IMPACT_LOOKBACK_DAYS || secrets.AI_HIGH_IMPACT_LOOKBACK_DAYS }}
+      HISTORY_TTL_HOURS: ${{ vars.HISTORY_TTL_HOURS || secrets.HISTORY_TTL_HOURS }}
+      # Optional sources (true / false)
+      ENABLE_GOOGLE_NEWS: ${{ vars.ENABLE_GOOGLE_NEWS || secrets.ENABLE_GOOGLE_NEWS }}
+      ENABLE_TICKER_NEWS: ${{ vars.ENABLE_TICKER_NEWS || secrets.ENABLE_TICKER_NEWS }}
+      # AI models (default auto)
+      AI_MODEL: ${{ vars.AI_MODEL || secrets.AI_MODEL }}
+      GROQ_MODEL: ${{ vars.GROQ_MODEL || secrets.GROQ_MODEL }}
+      NVIDIA_MODEL: ${{ vars.NVIDIA_MODEL || secrets.NVIDIA_MODEL }}
       # The repo owner chose Gemini -> NVIDIA -> Groq and accepts using
       # NVIDIA's free API Catalog (trial terms: development/evaluation only)
       # for this low-volume personal digest. Override with repo variables.
-      NVIDIA_ALLOW_PRODUCTION: ${{ vars.NVIDIA_ALLOW_PRODUCTION || 'true' }}
-      AI_PROVIDER_ORDER: ${{ vars.AI_PROVIDER_ORDER || 'gemini,nvidia,groq' }}
+      NVIDIA_ALLOW_PRODUCTION: ${{ vars.NVIDIA_ALLOW_PRODUCTION || secrets.NVIDIA_ALLOW_PRODUCTION || 'true' }}
+      AI_PROVIDER_ORDER: ${{ vars.AI_PROVIDER_ORDER || secrets.AI_PROVIDER_ORDER || 'gemini,nvidia,groq' }}
       NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN_PAT || github.token }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -76,6 +99,9 @@ jobs:
       # Re-enabling via the API on every run keeps the schedule alive without
       # needing keepalive commits. Runs first so a failing report run still
       # extends the schedule; never fails the job.
+      - name: Show effective settings
+        run: python scripts/show_config.py
+
       - name: Keep schedule alive
         env:
           GH_TOKEN: ${{ github.token }}

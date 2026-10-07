@@ -78,6 +78,28 @@ GitHub 會在 repo 60 天沒有活動時自動停用排程。workflow 每次執�
 
 手動驗證：在 Actions 頁面對 `Intel Flow Schedule` 按 **Run workflow** 並勾選 `dry_run`，會用真實來源與 AI 分析跑一輪但不發送 Discord/Notion，結果 `data/latest_run.json` 以 artifact `latest-run` 上傳，可檢查 `meta.ai_pipeline.irrelevant_dropped_sample` 等欄位。
 
+## 在 GitHub 上調整設定
+
+不用改程式：到 repo **Settings → Secrets and variables → Actions**。
+API key 放 **Secrets**。其餘設定放 **Variables** 或 **Secrets** 都可以：workflow 先讀 Variables、沒有再讀 Secrets，都沒設就用預設值。放 Variables 的好處是 Actions log 的 `Show effective settings` 步驟看得到實際值；放 Secrets 的值在 log 會被遮成 `***`（例如 `US_STOCKS=NVDA` 放 Secrets，log 裡所有 `NVDA` 都會被遮）。
+
+| Variable | 用途 | 範例 / 預設 |
+| --- | --- | --- |
+| `US_STOCKS` | 美股觀察清單 | `NVDA,TSLA,AMD,GOOG,AAPL,SPCX` |
+| `TW_STOCKS` | 台股觀察清單 | `0050,2330,00692` |
+| `STOCK_NAME_ALIASES` | 代號對應的公司 / 產品名（新聞搜尋用；新增股票時建議一起加） | `SPCX:SpaceX\|Starlink\|Starship,2330:TSMC` |
+| `STOCK_WATCH_TOPICS` | 股市額外追蹤主題（Google News） | `SpaceX stock,Nvidia earnings` |
+| `AI_WATCH_TOPICS` | AI 額外追蹤主題（Google News） | `Anthropic Claude,OpenAI GPT-6` |
+| `AI_MODEL_WATCH` | 旗艦模型名稱（新聞精準搜尋） | `Claude Opus,GPT-6,Gemini 4` |
+| `AI_GITHUB_RELEASE_REPOS` | 追蹤 release 的 GitHub repo | `openai/openai-python,...` |
+| `STOCK_NEWS_LOOKBACK_DAYS` / `AI_NEWS_LOOKBACK_DAYS` | 新聞時間窗（天） | `7` / `7` |
+| `AI_HIGH_IMPACT_LOOKBACK_DAYS` | 重大 AI 事件保留天數 | `30` |
+| `HISTORY_TTL_HOURS` | 跨輪去重記憶時數 | `26` |
+| `ENABLE_GOOGLE_NEWS` / `ENABLE_TICKER_NEWS` | 開關 Google News / Yahoo 個股新聞 | `true` |
+| `AI_PROVIDER_ORDER` | AI 嘗試順序 | `gemini,nvidia,groq` |
+| `AI_MODEL` / `GROQ_MODEL` / `NVIDIA_MODEL` | 固定模型（預設 `auto` 自動挑） | `auto` |
+| `NVIDIA_ALLOW_PRODUCTION` | 排程是否使用 NVIDIA | `true` |
+
 ## 設定重點
 
 環境變數來源優先順序：
