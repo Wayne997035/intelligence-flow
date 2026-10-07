@@ -62,8 +62,23 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 class Config:
     GEMINI_API_KEY = _get_env("GEMINI_API_KEY")
     GROQ_API_KEY = _get_env("GROQ_API_KEY")
-    AI_MODEL = _get_env("AI_MODEL", "gemini-flash-latest")
-    GROQ_MODEL = _get_env("GROQ_MODEL", "llama-3.3-70b-versatile")
+    # "auto" asks each provider which models the key can use and picks the
+    # newest general one (see AIAnalyzer). Set a model id to pin it.
+    AI_MODEL = _get_env("AI_MODEL", "auto")
+    GROQ_MODEL = _get_env("GROQ_MODEL", "auto")
+    # NVIDIA API Catalog (build.nvidia.com): third AI fallback after Gemini/Groq.
+    NVIDIA_API_KEY = _get_env("NVIDIA_API_KEY")
+    NVIDIA_MODEL = _get_env("NVIDIA_MODEL", "auto")
+    # NVIDIA API Trial Terms: the free endpoint is for trial/development/
+    # evaluation only; production use of the service or its output needs a
+    # paid subscription. Scheduled live delivery therefore skips NVIDIA
+    # unless this is set to true for an account with production rights.
+    NVIDIA_ALLOW_PRODUCTION = _get_bool("NVIDIA_ALLOW_PRODUCTION", False)
+    # Provider fallback order for AI analysis.
+    AI_PROVIDER_ORDER = _get_list("AI_PROVIDER_ORDER", ["gemini", "nvidia", "groq"])
+    NVIDIA_BASE_URL = (
+        _get_env("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1") or "https://integrate.api.nvidia.com/v1"
+    ).rstrip("/")
 
     NEWS_API_KEY = _get_env("NEWS_API_KEY")
     GITHUB_TOKEN = _get_env("GITHUB_TOKEN")
