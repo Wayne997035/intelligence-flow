@@ -37,4 +37,6 @@ jobs:
           cache: "pip"
       - run: pip install -r requirements.txt
       - name: Check Gemini, Groq and NVIDIA
-        run: python scripts/ai_healthcheck.py
+        # PRs only ping each provider once; the model evaluation (many calls)
+        # runs on manual dispatch to save free-tier daily quotas.
+        run: python scripts/ai_healthcheck.py ${{ github.event_name == 'workflow_dispatch' && '--evaluate' || '' }}
