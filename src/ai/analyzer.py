@@ -19,6 +19,20 @@ from src.pipeline import (
     summarize_sources,
 )
 from src.utils.logger import logger
+from src.utils.redact import redact
+
+def _prompt_item(item: IntelligenceItem) -> dict:
+    """Fields the model needs, with the description trimmed."""
+    data = asdict(item)
+    return {
+        "title": data.get("title"),
+        "url": data.get("url"),
+        "desc": (data.get("desc") or "")[:160],
+        "source_name": data.get("source_name"),
+        "source_type": data.get("source_type"),
+        "published_at": data.get("published_at"),
+    }
+
 
 _SENTENCE_END = re.compile(r"[。！？!?]|\.(?:\s|$)")
 
@@ -141,7 +155,7 @@ class AIAnalyzer:
             "task": "analyze_stock_market",
             "language": "zh-TW",
             "stocks": stock_quotes,
-            "news": [asdict(item) for item in news[:12]],
+            "news": [_prompt_item(item) for item in news[:12]],
             "instructions": [
                 "回傳 JSON，禁止輸出 markdown 或額外說明。",
                 "summary 要總結盤勢、新聞主線與風險；stocks 內的 change_pct / change_5d_pct / change_1m_pct / volume_ratio 是日、5日、1月漲跌幅與量比，請據此判斷趨勢與異常量能。",
@@ -157,7 +171,10 @@ class AIAnalyzer:
         return {
             "task": "analyze_ai_tech",
             "language": "zh-TW",
-            "news": [asdict(item) for item in news[:24]],
+            # 16 items with trimmed descriptions keeps the request within
+            # free-tier per-request token limits (Groq rejected the 24-item
+            # prompt as too large on 2026-10-07).
+            "news": [_prompt_item(item) for item in news[:16]],
             "instructions": [
                 "回傳 JSON，禁止輸出 markdown 或額外說明。",
                 "summary 要總結今天值得看的模型、agent、SDK、GitHub 專案、論文與官方消息。",
@@ -316,9 +333,12 @@ class AIAnalyzer:
         return parsed
 
     def _mark_ai_failure(self, report: AnalyzedReport) -> AnalyzedReport:
-        reasons = "；".join(self.ai_errors) or "未設定可用的 AI 供應商"
+        # Provider errors are operator detail: they go to the run log,
+        # latest_run.json (meta.ai_errors) and the red workflow check, never
+        # into the Discord / Notion text readers see.
+        reasons = redact("；".join(self.ai_errors) or "未設定可用的 AI 供應商")
         report.metadata["ai_error"] = reasons
-        report.summary = f"⚠️ AI 分析失敗（{reasons}），以下為規則式摘要。 {report.summary}"
+        report.summary = f"本輪 AI 分析暫時無法使用，以下為自動整理的摘要。 {report.summary}"
         logger.error("AI analysis degraded to local synthesis: %s", reasons)
         return report
 

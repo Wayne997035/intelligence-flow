@@ -30,6 +30,7 @@ from src.pipeline import (
     source_quality_score,
 )
 from src.utils.logger import logger
+from src.utils.redact import redact
 from src.utils.state_store import RunStateStore, dump_artifact
 
 try:
@@ -47,7 +48,7 @@ def safe_call(errors: list[str], label: str, fn, default):
     try:
         return fn()
     except Exception as exc:  # pragma: no cover - exercised via tests with fakes
-        message = f"{label}: {type(exc).__name__}: {str(exc)[:200]}"
+        message = f"{label}: {type(exc).__name__}: {redact(exc)[:200]}"
         logger.exception("Pipeline step failed - %s", message)
         errors.append(message)
         return default

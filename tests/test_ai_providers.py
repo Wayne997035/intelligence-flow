@@ -273,19 +273,24 @@ class TestModelSelection(unittest.TestCase):
         from src.ai.llm_router import choose_best_model
 
         http = self._nvidia_http({"llama-9-500b": "poor", "llama-9-120b": "great", "llama-9-70b": 404})
-        router = _router(http=http, nvidia_api_key="nvapi", nvidia_enabled=True, nvidia_model="auto")
+        router = _router(
+            http=http, nvidia_api_key="nvapi", nvidia_enabled=True, nvidia_model="auto", probe_model_selection=True
+        )
         chosen, log = choose_best_model(
             router, "nvidia", "probe", lambda text: {"great": (1.0,), "poor": (0.3,)}.get(text)
         )
         self.assertEqual(chosen, "llama-9-120b")
-        self.assertEqual(router.models["nvidia"], "llama-9-120b")
+        # Best first, the other responsive model kept as fallback, 404 dropped.
+        self.assertEqual(router.attempt_order("nvidia"), ["llama-9-120b", "llama-9-500b"])
         self.assertEqual(len(log), 3)
 
     def test_selection_runs_lazily_once_when_provider_is_reached(self):
         http = self._nvidia_http({"llama-9-500b": "poor", "llama-9-120b": "great"})
         gemini = MagicMock()
         gemini.models.generate_content.return_value = SimpleNamespace(text="from gemini")
-        router = _router(gemini=gemini, http=http, nvidia_api_key="nvapi", nvidia_enabled=True)
+        router = _router(
+            gemini=gemini, http=http, nvidia_api_key="nvapi", nvidia_enabled=True, probe_model_selection=True
+        )
         router.set_model_selector("probe", lambda text: {"great": (1.0,), "poor": (0.3,)}.get(text))
         self.assertEqual(router.complete("p").provider, "gemini")
         http.post.assert_not_called()  # Gemini answered, NVIDIA never probed
@@ -336,6 +341,84 @@ class TestAnalysisQuality(unittest.TestCase):
         self.assertIsNone(analysis_quality('{"items": [{"title": "x"}]}', 3))
 
 
+class TestFailover(unittest.TestCase):
+    def test_probe_selection_is_off_by_default(self):
+        self.assertFalse(LLMSettings().probe_model_selection)
+        http = MagicMock()
+        router = _router(http=http, nvidia_api_key="nvapi", nvidia_enabled=True)
+        router.set_model_selector("probe", lambda text: (1,))
+        router._maybe_select("nvidia")
+        http.post.assert_not_called()
+
+    def test_groq_walks_to_next_model_on_rate_limit(self):
+        groq = MagicMock()
+        groq.models.list.return_value = SimpleNamespace(
+            data=[SimpleNamespace(id="qwen/qwen3.8-27b"), SimpleNamespace(id="openai/gpt-oss-120b")]
+        )
+        groq.chat.completions.create.side_effect = [
+            Exception("Error code: 429 - {'error': {'message': 'Request too large for model on output tokens per minute'}}"),
+            _groq_response(_VALID_JSON),
+        ]
+        router = _router(groq=groq, groq_model="auto")
+        result = router.complete("p")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider, "groq")
+        self.assertEqual(groq.chat.completions.create.call_count, 2)
+        first, second = [call.kwargs["model"] for call in groq.chat.completions.create.call_args_list]
+        self.assertNotEqual(first, second)
+        self.assertEqual(result.model, second)
+
+    def test_successful_model_is_tried_first_but_others_remain(self):
+        http = MagicMock()
+        listing = MagicMock(status_code=200)
+        listing.json.return_value = {"data": [{"id": "llama-9-500b"}, {"id": "llama-9-120b"}]}
+        http.get.return_value = listing
+        bad = MagicMock(status_code=503, text="overloaded")
+        good = MagicMock(status_code=200)
+        good.json.return_value = {"choices": [{"message": {"content": _VALID_JSON}}]}
+        http.post.side_effect = [bad, good, bad, good]
+        router = _router(http=http, nvidia_api_key="nvapi", nvidia_enabled=True)
+        self.assertEqual(router.complete("p").model, "llama-9-120b")
+        self.assertEqual(router.attempt_order("nvidia"), ["llama-9-120b", "llama-9-500b"])
+        # Next request: the winner fails this time, the other one still gets a try.
+        self.assertEqual(router.complete("p2").model, "llama-9-500b")
+
+    def test_retired_and_quota_exhausted_models_are_skipped_for_the_run(self):
+        gemini = MagicMock()
+        gemini.models.list.return_value = [_gemini_model("gemini-3.8-flash"), _gemini_model("gemini-3.7-flash")]
+        gemini.models.generate_content.side_effect = [
+            Exception("429 RESOURCE_EXHAUSTED. quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+            SimpleNamespace(text=_VALID_JSON),
+            SimpleNamespace(text=_VALID_JSON),
+        ]
+        router = _router(gemini=gemini, gemini_model="auto")
+        router.complete("p")
+        router.complete("p2")
+        models = [call.kwargs["model"] for call in gemini.models.generate_content.call_args_list]
+        self.assertEqual(models, ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.7-flash"])
+
+    def test_provider_budget_moves_to_next_provider(self):
+        gemini = MagicMock()
+        gemini.models.list.return_value = [_gemini_model(f"gemini-3.{i}-flash") for i in range(5)]
+        gemini.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        groq = MagicMock()
+        groq.chat.completions.create.return_value = _groq_response(_VALID_JSON)
+        router = _router(gemini=gemini, groq=groq, gemini_model="auto", provider_budget_seconds=10)
+        # Gemini's first attempt "takes" 100s: its budget is spent, so the
+        # chain moves to Groq instead of trying four more Gemini models.
+        clock = iter([0, 0, 100, 100, 100, 100, 100, 100])
+        with patch("src.ai.llm_router.time.monotonic", side_effect=lambda: next(clock)):
+            result = router.complete("p")
+        self.assertEqual(result.provider, "groq")
+        self.assertEqual(gemini.models.generate_content.call_count, 1)
+        self.assertTrue(any("時間上限" in error for error in result.errors))
+
+    def test_long_timeouts_by_default(self):
+        settings = LLMSettings()
+        self.assertGreaterEqual(settings.nvidia_timeout_seconds, 600)
+        self.assertGreaterEqual(settings.provider_budget_seconds, 600)
+
+
 class TestRouterRobustness(unittest.TestCase):
     def test_no_provider_configured(self):
         result = _router().complete("p")
@@ -378,7 +461,10 @@ class TestAnalyzerIntegration(unittest.TestCase):
         groq = MagicMock()
         groq.chat.completions.create.side_effect = Exception("Error code: 401 - {'error': {'message': 'Invalid API Key'}}")
         report = self._analyzer(_router(gemini=gemini, groq=groq)).analyze_ai_tech(_news())
-        self.assertTrue(report.summary.startswith("⚠️ AI 分析失敗"))
+        # Readers only see a plain notice; provider errors stay in metadata/logs.
+        self.assertTrue(report.summary.startswith("本輪 AI 分析暫時無法使用"))
+        for leaked in ("403", "401", "Gemini", "Groq", "denied", "Invalid API Key"):
+            self.assertNotIn(leaked, report.summary)
         self.assertIn("Gemini(gemini-flash-latest) 403: Your project has been denied access", report.metadata["ai_error"])
         self.assertIn("Groq(llama-3.3-70b-versatile) 401: Invalid API Key", report.metadata["ai_error"])
 

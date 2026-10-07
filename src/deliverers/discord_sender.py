@@ -9,6 +9,7 @@ from src.deliverers.guard import should_deliver
 from src.models import AnalyzedReport
 from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
+from src.utils.redact import redact
 
 
 class DiscordSender:
@@ -233,11 +234,11 @@ class DiscordSender:
                 return
             except requests.HTTPError as exc:
                 status = getattr(exc.response if exc.response is not None else response, "status_code", None)
-                error = f"Discord {title}: HTTP {status} {str(exc)[:200]}"
+                error = f"Discord {title}: HTTP {status} {redact(exc)[:200]}"
                 retryable = isinstance(status, int) and (status == 429 or status >= 500)
                 wait_seconds = self._retry_after(exc.response if exc.response is not None else response)
             except Exception as exc:
-                error = f"Discord {title}: {type(exc).__name__}: {exc}"
+                error = f"Discord {title}: {type(exc).__name__}: {redact(exc)[:200]}"
                 retryable, wait_seconds = True, 2.0
             if attempt == 1 and retryable:
                 logger.warning("%s; retrying once in %.1fs.", error, wait_seconds)

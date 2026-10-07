@@ -162,7 +162,12 @@ def _evaluate_models(settings: LLMSettings, responsive_per_provider: int = 5, ma
 def main() -> int:
     settings = _settings()
     results = {name: _check(name, settings) for name in ("gemini", "groq", "nvidia")}
-    _evaluate_models(settings)
+    # The full model evaluation makes many calls; Gemini's free tier allows
+    # only 20 requests per model per day, and PR runs used it up on
+    # 2026-10-07. Run it on demand only: `python scripts/ai_healthcheck.py
+    # --evaluate` (the workflow passes it for manual dispatches).
+    if "--evaluate" in sys.argv:
+        _evaluate_models(settings)
 
     checked = {name: ok for name, ok in results.items() if ok is not None}
     if not checked:

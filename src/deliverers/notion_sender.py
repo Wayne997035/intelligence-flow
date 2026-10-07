@@ -10,6 +10,7 @@ from src.deliverers.guard import should_deliver
 from src.models import AnalyzedReport
 from src.pipeline import content_dedupe_key
 from src.utils.logger import logger
+from src.utils.redact import redact
 
 try:
     from notion_client import Client
@@ -241,7 +242,7 @@ class NotionSender:
                 children=self._cap_blocks(blocks),
             )
         except Exception as exc:
-            error = f"Notion {title_prefix}: {type(exc).__name__}: {str(exc)[:200]}"
+            error = f"Notion {title_prefix}: {type(exc).__name__}: {redact(exc)[:200]}"
             logger.error("%s", error)
             self.errors.append(error)
             return None
