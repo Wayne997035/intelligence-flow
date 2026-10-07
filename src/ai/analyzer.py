@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-import signal
 from collections import Counter
 from dataclasses import asdict
 from datetime import timezone
 from typing import Callable
 from urllib.parse import urlsplit
 
+from src.ai.llm_router import LLMRouter, LLMSettings
 from src.config import Config
 from src.models import AnalyzedReport, IntelligenceItem, ReportItem
 from src.pipeline import (
@@ -20,25 +20,43 @@ from src.pipeline import (
 )
 from src.utils.logger import logger
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-except ImportError:  # pragma: no cover - optional dependency in dry-run
-    genai = None
-    genai_types = None
-
-try:
-    from groq import Groq
-except ImportError:  # pragma: no cover - optional dependency in dry-run
-    Groq = None
+_SENTENCE_END = re.compile(r"[。！？!?]|\.(?:\s|$)")
 
 
-class TimeoutException(Exception):
-    """Raised when upstream AI calls exceed the hard timeout."""
+def analysis_quality(text: str | None, expected_items: int) -> tuple | None:
+    """Score an analysis answer for model selection (higher is better).
 
-
-def timeout_handler(signum, frame):  # pragma: no cover - signal plumbing
-    raise TimeoutException
+    Order of importance: enough complete items (title/url/summary/insight),
+    summary and outlook present, insights that follow the "at least two
+    sentences" instruction, and Traditional-Chinese ratio. Values are
+    bucketed so that latency (the router's tie-breaker) only decides between
+    answers of equal quality. None means unusable.
+    """
+    if not text:
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    items = [
+        item
+        for item in payload.get("items") or []
+        if isinstance(item, dict) and all(str(item.get(key) or "").strip() for key in ("title", "url", "summary", "insight"))
+    ]
+    if not items:
+        return None
+    completeness = round(min(len(items), expected_items) / expected_items, 1)
+    framing = int(bool(str(payload.get("summary") or "").strip())) + int(bool(str(payload.get("outlook") or "").strip()))
+    depth = round(sum(len(_SENTENCE_END.findall(str(item["insight"]))) >= 2 for item in items) / len(items), 1)
+    prose = " ".join([str(payload.get("summary") or ""), str(payload.get("outlook") or "")] + [str(i["insight"]) for i in items])
+    letters = [char for char in prose if char.isalpha()]
+    zh = round(sum("\u4e00" <= char <= "\u9fff" for char in letters) / len(letters), 1) if letters else 0.0
+    return (completeness, framing, depth, zh)
 
 
 class AIAnalyzer:
@@ -87,33 +105,39 @@ class AIAnalyzer:
         "required": ["summary", "items", "outlook"],
     }
 
-    def __init__(self, enable_ai: bool | None = None):
+    def __init__(self, enable_ai: bool | None = None, *, nvidia_enabled: bool | None = None):
         self.enable_ai = Config.ENABLE_AI_ANALYSIS if enable_ai is None else enable_ai
-        self.gemini_client = (
-            genai.Client(api_key=Config.GEMINI_API_KEY)
-            if self.enable_ai and genai and Config.GEMINI_API_KEY
-            else None
-        )
-        self.groq_client = (
-            Groq(api_key=Config.GROQ_API_KEY)
-            if self.enable_ai and Groq and Config.GROQ_API_KEY
-            else None
+        # Short provider failure reasons from the latest analysis call, shown
+        # in the report so a degraded run is visible instead of silent.
+        self.ai_errors: list[str] = []
+        self.last_provider: str | None = None
+        self.router = LLMRouter(
+            LLMSettings(
+                gemini_api_key=Config.GEMINI_API_KEY if self.enable_ai else None,
+                groq_api_key=Config.GROQ_API_KEY if self.enable_ai else None,
+                nvidia_api_key=Config.NVIDIA_API_KEY if self.enable_ai else None,
+                gemini_model=Config.AI_MODEL,
+                groq_model=Config.GROQ_MODEL,
+                nvidia_model=Config.NVIDIA_MODEL,
+                nvidia_base_url=Config.NVIDIA_BASE_URL,
+                provider_order=tuple(Config.AI_PROVIDER_ORDER),
+                # NVIDIA's free tier is trial/evaluation-only; see llm_router.
+                nvidia_enabled=Config.NVIDIA_ALLOW_PRODUCTION if nvidia_enabled is None else nvidia_enabled,
+            ),
+            logger=logger,
         )
         if self.enable_ai:
-            logger.info("Analyzer initialized with live AI providers.")
+            providers = self.router.configured_providers()
+            if providers:
+                logger.info("Analyzer initialized with live AI providers: %s.", ", ".join(providers))
+            else:
+                logger.warning("AI analysis enabled but no provider is configured; reports will use local synthesis.")
         else:
             logger.info("Analyzer running in local synthesis mode.")
 
-    def analyze_stock_market(
-        self,
-        stock_quotes: list[dict],
-        news: list[IntelligenceItem],
-    ) -> AnalyzedReport:
-        fallback = lambda: self._build_stock_fallback(stock_quotes, news)
-        if not news:
-            return fallback()
-
-        prompt = {
+    @staticmethod
+    def stock_prompt(stock_quotes: list[dict], news: list[IntelligenceItem]) -> dict:
+        return {
             "task": "analyze_stock_market",
             "language": "zh-TW",
             "stocks": stock_quotes,
@@ -127,21 +151,10 @@ class AIAnalyzer:
                 "outlook 要給後續觀察重點，避免過度肯定的投資建議。",
             ],
         }
-        report = self._run_analysis(
-            prompt=prompt,
-            fallback=fallback,
-            title="投資情報報告",
-            outlook_label="🕵️ 專家總結",
-            item_limit=self._STOCK_REPORT_ITEM_LIMIT,
-        )
-        return self._post_process_stock_report(report, news)
 
-    def analyze_ai_tech(self, news: list[IntelligenceItem]) -> AnalyzedReport:
-        fallback = lambda: self._build_ai_fallback(news)
-        if not news:
-            return fallback()
-
-        prompt = {
+    @staticmethod
+    def ai_prompt(news: list[IntelligenceItem]) -> dict:
+        return {
             "task": "analyze_ai_tech",
             "language": "zh-TW",
             "news": [asdict(item) for item in news[:24]],
@@ -156,6 +169,42 @@ class AIAnalyzer:
                 "outlook 要指出接下來值得追蹤的官方來源或技術方向。",
             ],
         }
+
+    def _prepare_model_selection(self, probe: dict, *, expected_items: int) -> None:
+        """Give the router a small version of this exact task so that, the
+        first time a provider in auto mode is reached, it picks the candidate
+        model that handles this kind of analysis best (see
+        llm_router.choose_best_model)."""
+        prompt = json.dumps(probe, ensure_ascii=False)
+        self.router.set_model_selector(prompt, lambda text: analysis_quality(text, expected_items))
+
+    def analyze_stock_market(
+        self,
+        stock_quotes: list[dict],
+        news: list[IntelligenceItem],
+    ) -> AnalyzedReport:
+        fallback = lambda: self._build_stock_fallback(stock_quotes, news)
+        if not news:
+            return fallback()
+
+        prompt = self.stock_prompt(stock_quotes, news)
+        self._prepare_model_selection(self.stock_prompt(stock_quotes[:6], news[:3]), expected_items=3)
+        report = self._run_analysis(
+            prompt=prompt,
+            fallback=fallback,
+            title="投資情報報告",
+            outlook_label="🕵️ 專家總結",
+            item_limit=self._STOCK_REPORT_ITEM_LIMIT,
+        )
+        return self._post_process_stock_report(report, news)
+
+    def analyze_ai_tech(self, news: list[IntelligenceItem]) -> AnalyzedReport:
+        fallback = lambda: self._build_ai_fallback(news)
+        if not news:
+            return fallback()
+
+        prompt = self.ai_prompt(news)
+        self._prepare_model_selection(self.ai_prompt(news[:3]), expected_items=3)
         report = self._run_analysis(
             prompt=prompt,
             fallback=fallback,
@@ -249,9 +298,10 @@ class AIAnalyzer:
         if not self.enable_ai:
             return fallback()
 
+        self.ai_errors = []
         raw_response = self._get_ai_response(json.dumps(prompt, ensure_ascii=False))
         if not raw_response:
-            return fallback()
+            return self._mark_ai_failure(fallback())
 
         parsed = self._parse_response(
             raw_response,
@@ -261,8 +311,16 @@ class AIAnalyzer:
         )
         if parsed is None:
             logger.warning("AI response was not valid JSON. Falling back to local synthesis.")
-            return fallback()
+            self.ai_errors.append("AI 回應不是有效 JSON")
+            return self._mark_ai_failure(fallback())
         return parsed
+
+    def _mark_ai_failure(self, report: AnalyzedReport) -> AnalyzedReport:
+        reasons = "；".join(self.ai_errors) or "未設定可用的 AI 供應商"
+        report.metadata["ai_error"] = reasons
+        report.summary = f"⚠️ AI 分析失敗（{reasons}），以下為規則式摘要。 {report.summary}"
+        logger.error("AI analysis degraded to local synthesis: %s", reasons)
+        return report
 
     def _parse_response(
         self,
@@ -940,40 +998,9 @@ class AIAnalyzer:
         return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
     def _get_ai_response(self, prompt: str) -> str | None:
-        if self.gemini_client:
-            try:
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(60)
-                config = (
-                    genai_types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=self._REPORT_RESPONSE_SCHEMA,
-                    )
-                    if genai_types
-                    else None
-                )
-                response = self.gemini_client.models.generate_content(
-                    model=Config.AI_MODEL,
-                    contents=prompt,
-                    config=config,
-                )
-                signal.alarm(0)
-                return response.text
-            except Exception as exc:  # pragma: no cover - live provider failure
-                signal.alarm(0)
-                logger.warning("Gemini failed, trying Groq fallback: %s", exc)
-
-        if self.groq_client:
-            try:
-                response = self.groq_client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=Config.GROQ_MODEL,
-                    # Without JSON mode Llama often prefixes prose, which failed
-                    # parsing and silently dropped the run to local synthesis.
-                    response_format={"type": "json_object"},
-                )
-                return response.choices[0].message.content
-            except Exception as exc:  # pragma: no cover - live provider failure
-                logger.error("Groq fallback failed: %s", exc)
-
-        return None
+        result = self.router.complete(prompt, json_schema=self._REPORT_RESPONSE_SCHEMA)
+        self.ai_errors = list(result.errors)
+        self.last_provider = f"{result.provider}:{result.model}" if result.ok else None
+        if result.ok:
+            logger.info("AI analysis by %s (%s).", result.provider, result.model)
+        return result.text

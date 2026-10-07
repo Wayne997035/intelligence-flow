@@ -74,6 +74,8 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 
 排程使用 GitHub Actions `schedule.timezone`，時區設定為 `Asia/Taipei`。
 
+GitHub 會在 repo 60 天沒有活動時自動停用排程。workflow 每次執行都會先呼叫 API 重新 enable 自己（`Keep schedule alive` 步驟）來避免這件事；若仍被停用，到 Actions → `Intel Flow Schedule` 按 **Enable workflow**。
+
 手動驗證：在 Actions 頁面對 `Intel Flow Schedule` 按 **Run workflow** 並勾選 `dry_run`，會用真實來源與 AI 分析跑一輪但不發送 Discord/Notion，結果 `data/latest_run.json` 以 artifact `latest-run` 上傳，可檢查 `meta.ai_pipeline.irrelevant_dropped_sample` 等欄位。
 
 ## 設定重點
@@ -88,6 +90,10 @@ GitHub Actions 透過 `.github/workflows/intel-flow-schedule.yml` 執行：
 | 變數 | 用途 |
 | --- | --- |
 | `ENABLE_AI_ANALYSIS` | 是否啟用 AI 產生摘要/洞察 |
+| `GEMINI_API_KEY` / `GROQ_API_KEY` / `NVIDIA_API_KEY` | AI 分析供應商，依序 Gemini → Groq → NVIDIA（build.nvidia.com）失敗才換下一家，至少要有一個 |
+| `AI_PROVIDER_ORDER` | AI 供應商嘗試順序，預設 `gemini,groq,nvidia` |
+| `NVIDIA_ALLOW_PRODUCTION` | 預設 `false`。NVIDIA 免費 API 依 [NVIDIA API Trial Terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf) 僅限試用 / 開發 / 評估，正式使用需另購訂閱；因此排程正式發送預設不用 NVIDIA，只在 dry run 與 AI health check（評估）使用。有正式授權才設 `true` |
+| `AI_MODEL` / `GROQ_MODEL` / `NVIDIA_MODEL` | 預設 `auto`：向各家查這把 key 可用的模型，自動挑最新的通用模型（Gemini 依序嘗試最多 5 個、每個等 30 秒，遇到 503/逾時就換下一個）；填入模型 id 則固定使用。可設為 repo variables |
 | `ENABLE_DISCORD_DELIVERY` | 是否發送到 Discord |
 | `ENABLE_NOTION_DELIVERY` | 是否發送到 Notion |
 | `DRY_RUN` | 是否阻止外部發送（預設 `true`） |

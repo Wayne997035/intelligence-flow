@@ -162,15 +162,17 @@ class TestAnalyzer(unittest.TestCase):
         self.assertEqual(parsed.items[0].title, "valid")
 
     def test_gemini_response_uses_structured_json_config(self):
+        from src.ai.llm_router import LLMRouter, LLMSettings
+
         analyzer = AIAnalyzer(enable_ai=False)
-        analyzer.groq_client = None
-        analyzer.gemini_client = Mock()
-        analyzer.gemini_client.models.generate_content.return_value = Mock(text='{"summary":"x","items":[],"outlook":"o"}')
+        gemini = Mock()
+        gemini.models.generate_content.return_value = Mock(text='{"summary":"x","items":[],"outlook":"o"}')
+        analyzer.router = LLMRouter(LLMSettings(gemini_model="gemini-x"), gemini_client=gemini, groq_client=None)
 
         response = analyzer._get_ai_response("prompt")
 
         self.assertIsNotNone(response)
-        call = analyzer.gemini_client.models.generate_content.call_args
+        call = gemini.models.generate_content.call_args
         config = call.kwargs["config"]
         self.assertEqual(config.response_mime_type, "application/json")
         self.assertIn("items", config.response_schema["properties"])

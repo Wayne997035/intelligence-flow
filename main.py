@@ -18,6 +18,7 @@ from src.collectors.tech_collector import TechCollector
 from src.config import Config
 from src.deliverers.discord_sender import DiscordSender
 from src.deliverers.notion_sender import NotionSender
+from src.models import AnalyzedReport
 from src.pipeline import (
     ai_impact_score,
     deduplicate_and_rank,
@@ -37,6 +38,19 @@ except ImportError:  # pragma: no cover - optional in test environments
     BlockingScheduler = None
 
 DEFAULT_FIXTURE = Path(__file__).parent / "tests" / "fixtures" / "sample_bundle.json"
+
+
+def safe_call(errors: list[str], label: str, fn, default):
+    """Run one pipeline step; on any exception log it, record it and return
+    `default` so a single broken source, report or delivery never stops the
+    rest of the run."""
+    try:
+        return fn()
+    except Exception as exc:  # pragma: no cover - exercised via tests with fakes
+        message = f"{label}: {type(exc).__name__}: {str(exc)[:200]}"
+        logger.exception("Pipeline step failed - %s", message)
+        errors.append(message)
+        return default
 
 
 def trim_descriptions(items: list[dict], max_length: int) -> list[dict]:
@@ -258,27 +272,44 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
         logger.info("Loaded fixture bundle from %s.", fixture_path or DEFAULT_FIXTURE)
         return bundle
 
-    stock_fetcher = StockCollector()
-    news_fetcher = NewsCollector()
-    tech_fetcher = TechCollector()
-    hf_fetcher = HFCollector()
-    arxiv_fetcher = ArxivCollector()
-    official_fetcher = OfficialAICollector()
-    github_release_fetcher = GitHubReleaseCollector()
-    google_news_fetcher = GoogleNewsCollector()
+    errors: list[str] = []
+    collector_classes = {
+        "stock": StockCollector,
+        "news": NewsCollector,
+        "tech": TechCollector,
+        "hf": HFCollector,
+        "arxiv": ArxivCollector,
+        "official": OfficialAICollector,
+        "github_release": GitHubReleaseCollector,
+        "google_news": GoogleNewsCollector,
+    }
+    # Built one by one so a collector that fails to construct only loses its
+    # own sources.
+    fetchers = {
+        key: fetcher
+        for key, cls in collector_classes.items()
+        if (fetcher := safe_call(errors, f"collector setup {key}", cls, None)) is not None
+    }
+
+    def fetch(label: str, fetcher_key: str, method: str) -> list:
+        fetcher = fetchers.get(fetcher_key)
+        if fetcher is None:
+            return []
+        return safe_call(errors, f"source {label}", getattr(fetcher, method), []) or []
+
     stock_sources = {
-        "newsapi": news_fetcher.fetch_stock_news(),
-        "ticker_news": stock_fetcher.fetch_ticker_news(),
-        "google_news": google_news_fetcher.fetch_stock_topics(),
+        "newsapi": fetch("stock/newsapi", "news", "fetch_stock_news"),
+        "ticker_news": fetch("stock/ticker_news", "stock", "fetch_ticker_news"),
+        "google_news": fetch("stock/google_news", "google_news", "fetch_stock_topics"),
     }
     ai_sources = {
-        "newsapi": news_fetcher.fetch_ai_tech_news(),
-        "google_news": google_news_fetcher.fetch_ai_topics(),
-        "official": official_fetcher.fetch_updates(),
-        "github_release": github_release_fetcher.fetch_latest_releases(),
-        "community": tech_fetcher.fetch_all_community_ai(),
-        "huggingface": hf_fetcher.fetch_all_hf(),
-        "arxiv": arxiv_fetcher.fetch_all_arxiv(),
+        "newsapi": fetch("ai/newsapi", "news", "fetch_ai_tech_news"),
+        "google_news": fetch("ai/google_news", "google_news", "fetch_ai_topics"),
+        "official": fetch("ai/official", "official", "fetch_updates"),
+        "github_release": fetch("ai/github_release", "github_release", "fetch_latest_releases"),
+        "community": fetch("ai/community", "tech", "fetch_all_community_ai"),
+        "huggingface": fetch("ai/huggingface", "hf", "fetch_all_hf"),
+        "arxiv": fetch("ai/arxiv", "arxiv", "fetch_all_arxiv"),
     }
     source_counts = {
         "stock_news": {name: len(items) for name, items in stock_sources.items()},
@@ -286,18 +317,46 @@ def collect_inputs(use_fixture: bool, fixture_path: Path | None = None) -> dict:
     }
     logger.info("Collected item counts per source: %s", source_counts)
     return {
-        "us_stocks": stock_fetcher.fetch_us_stocks(),
-        "tw_stocks": stock_fetcher.fetch_tw_stocks(),
+        "us_stocks": fetch("quotes/us", "stock", "fetch_us_stocks"),
+        "tw_stocks": fetch("quotes/tw", "stock", "fetch_tw_stocks"),
         "stock_news": [item for items in stock_sources.values() for item in items],
         "ai_news": [item for items in ai_sources.values() for item in items],
         "_source_counts": source_counts,
+        "_errors": errors,
     }
 
 
 def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime | None = None) -> dict:
-    analyzer = AIAnalyzer(enable_ai=enable_ai)
-    notion = NotionSender(dry_run=dry_run)
-    discord = DiscordSender(dry_run=dry_run)
+    """Build and deliver both reports.
+
+    Failure isolation: each step runs through safe_call, the stock and AI
+    reports are independent sections, Notion and Discord failures are
+    recorded by the senders instead of raised, and a section that cannot
+    produce its report still sends a short failure notice. All failures land
+    in meta["errors"] (and latest_run.json) so the workflow can go red after
+    delivery instead of the run dying half way.
+    """
+    errors: dict[str, list[str]] = {
+        "collection": list(inputs.get("_errors", [])),
+        "report": [],
+        "delivery": [],
+        "state": [],
+    }
+
+    # Dry runs are evaluation, which the NVIDIA trial terms allow; live
+    # delivery only uses NVIDIA when NVIDIA_ALLOW_PRODUCTION is set.
+    analyzer = safe_call(
+        errors["report"],
+        "analyzer setup",
+        lambda: AIAnalyzer(enable_ai=enable_ai, nvidia_enabled=Config.NVIDIA_ALLOW_PRODUCTION or dry_run),
+        None,
+    ) or AIAnalyzer(enable_ai=False)
+    notion = safe_call(errors["delivery"], "notion setup", lambda: NotionSender(dry_run=dry_run), None) or NotionSender(
+        dry_run=dry_run, enabled=False
+    )
+    discord = safe_call(
+        errors["delivery"], "discord setup", lambda: DiscordSender(dry_run=dry_run), None
+    ) or DiscordSender(dry_run=dry_run, enabled=False)
     # `not dry_run` here is unrelated to the delivery-guard choke point in
     # src/deliverers/guard.py.
     #
@@ -309,14 +368,70 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
     # kept: the filesystem persists between runs, so without it a throwaway
     # dry-run would write throwaway fingerprints into the same on-disk dedup
     # history that later runs read back.
-    state_store = RunStateStore(
-        Config.STATE_FILE,
-        enabled=Config.ENABLE_HISTORY_DEDUP and not inputs.get("_fixture", False) and not dry_run,
-        history_limit=Config.HISTORY_LIMIT,
-        ttl_hours=Config.HISTORY_TTL_HOURS,
-    )
+    state_store = safe_call(
+        errors["state"],
+        "state store setup",
+        lambda: RunStateStore(
+            Config.STATE_FILE,
+            enabled=Config.ENABLE_HISTORY_DEDUP and not inputs.get("_fixture", False) and not dry_run,
+            history_limit=Config.HISTORY_LIMIT,
+            ttl_hours=Config.HISTORY_TTL_HOURS,
+        ),
+        None,
+    ) or RunStateStore(Config.STATE_FILE, enabled=False)
 
-    stock_priority = build_stock_priority()
+    quotes = list(inputs.get("us_stocks", [])) + list(inputs.get("tw_stocks", []))
+    meta: dict = {
+        "dry_run": dry_run,
+        "enable_ai": enable_ai,
+        "source_counts": inputs.get("_source_counts", {}),
+    }
+
+    def stock_section() -> dict:
+        stock_news_ranked = deduplicate_and_rank(
+            trim_descriptions(inputs.get("stock_news", []), Config.MAX_DESC_LENGTH),
+            build_stock_priority(),
+            limit=48,
+            default_source_name="news",
+            default_source_type="news",
+        )
+        stock_news_recent = balance_stock_news(
+            filter_recent_items(
+                stock_news_ranked,
+                max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
+                now=now,
+                require_published_at=True,
+            )
+        )
+        stock_news, skipped = safe_call(
+            errors["state"],
+            "state filter stock_news",
+            lambda: state_store.filter_new_items("stock_news", stock_news_recent, limit=12),
+            (stock_news_recent[:12], 0),
+        )
+        if not stock_news and stock_news_recent:
+            stock_news = stock_news_recent[:12]
+
+        report = safe_call(
+            errors["report"],
+            "stock analysis",
+            lambda: analyzer.analyze_stock_market(quotes, stock_news),
+            None,
+        ) or analyzer._build_stock_fallback(quotes, stock_news)
+        safe_call(
+            errors["report"],
+            "stock appendix",
+            lambda: attach_report_appendix(report, stock_news_recent, summarize_item=analyzer.build_stock_brief_item),
+            None,
+        )
+        report.metadata["history_duplicates_skipped"] = skipped
+        notion_url = notion.create_stock_insight_report(report)
+        payload = discord.send_stock_and_analysis(
+            inputs.get("us_stocks", []), inputs.get("tw_stocks", []), report, notion_url
+        )
+        meta["stock_duplicates_skipped"] = skipped
+        return {"report": report, "payload": payload, "items": stock_news}
+
     ai_priority = [
         "Claude",
         "Opus",
@@ -350,141 +465,169 @@ def build_reports(inputs: dict, *, enable_ai: bool, dry_run: bool, now: datetime
         "managed",
     ]
 
-    stock_news_ranked = deduplicate_and_rank(
-        trim_descriptions(inputs.get("stock_news", []), Config.MAX_DESC_LENGTH),
-        stock_priority,
-        limit=48,
-        default_source_name="news",
-        default_source_type="news",
-    )
-    ai_raw_trimmed = trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
-    ai_input_items: list = []
-    ai_irrelevant_count = 0
-    ai_irrelevant_sample: list[str] = []
-    for item in ai_raw_trimmed:
-        normalized = normalize_item(item)
-        if is_relevant_ai_item(normalized):
-            ai_input_items.append(item)
-        else:
-            ai_irrelevant_count += 1
-            if len(ai_irrelevant_sample) < 12:
-                ai_irrelevant_sample.append(normalized.title)
-    ai_news_ranked = deduplicate_and_rank(
-        ai_input_items,
-        ai_priority,
-        limit=60,
-        default_source_name="unknown",
-        default_source_type="news",
-    )
-
-    stock_news_recent = balance_stock_news(
-        filter_recent_items(
-            stock_news_ranked,
-            max_age_days=Config.STOCK_NEWS_LOOKBACK_DAYS,
+    def ai_section() -> dict:
+        ai_raw_trimmed = trim_descriptions(inputs.get("ai_news", []), Config.MAX_DESC_LENGTH)
+        ai_input_items: list = []
+        ai_irrelevant_count = 0
+        ai_irrelevant_sample: list[str] = []
+        for item in ai_raw_trimmed:
+            normalized = normalize_item(item)
+            if is_relevant_ai_item(normalized):
+                ai_input_items.append(item)
+            else:
+                ai_irrelevant_count += 1
+                if len(ai_irrelevant_sample) < 12:
+                    ai_irrelevant_sample.append(normalized.title)
+        ai_news_ranked = deduplicate_and_rank(
+            ai_input_items,
+            ai_priority,
+            limit=60,
+            default_source_name="unknown",
+            default_source_type="news",
+        )
+        ai_news_recent = filter_recent_items(
+            ai_news_ranked,
+            max_age_days=Config.AI_NEWS_LOOKBACK_DAYS,
             now=now,
             require_published_at=True,
         )
+        ai_high_impact_archive = filter_recent_items(
+            [item for item in ai_news_ranked if ai_impact_score(item) > 0],
+            max_age_days=Config.AI_HIGH_IMPACT_LOOKBACK_DAYS,
+            now=now,
+            require_published_at=True,
+        )
+        ai_recent_urls = {item.url for item in ai_news_recent}
+        ai_recent_cutoff_dropped = {"undated": 0, "older_than_window": 0}
+        for item in ai_news_ranked:
+            parsed = parse_published_at(item.published_at)
+            if parsed is None:
+                ai_recent_cutoff_dropped["undated"] += 1
+                continue
+            if item.url not in ai_recent_urls:
+                ai_recent_cutoff_dropped["older_than_window"] += 1
+
+        ai_news, skipped = safe_call(
+            errors["state"],
+            "state filter ai_news",
+            lambda: state_store.filter_new_items("ai_news", ai_news_recent, limit=30),
+            (ai_news_recent[:30], 0),
+        )
+        if not ai_news and ai_news_recent:
+            ai_news = ai_news_recent[:30]
+        ai_news = select_ai_report_candidates(ai_news, limit=24)
+        ai_selected_urls = {item.url for item in ai_news}
+
+        report = safe_call(
+            errors["report"],
+            "ai analysis",
+            lambda: analyzer.analyze_ai_tech(ai_news),
+            None,
+        ) or analyzer._build_ai_fallback(ai_news)
+        safe_call(
+            errors["report"],
+            "ai appendix",
+            lambda: attach_report_appendix(
+                report,
+                merge_unique_items(ai_news_recent, ai_high_impact_archive),
+                summarize_item=analyzer.build_ai_brief_item,
+            ),
+            None,
+        )
+        report.metadata["history_duplicates_skipped"] = skipped
+        notion_url = notion.create_ai_tech_report(report)
+        payload = discord.send_ai_tech_report(report, notion_url)
+        meta["ai_duplicates_skipped"] = skipped
+        meta["ai_pipeline"] = {
+            "raw_count": len(inputs.get("ai_news", [])),
+            "trimmed_count": len(ai_raw_trimmed),
+            "irrelevant_dropped": ai_irrelevant_count,
+            "irrelevant_dropped_sample": ai_irrelevant_sample,
+            "ranked_count": len(ai_news_ranked),
+            "recent_count": len(ai_news_recent),
+            "high_impact_archive_count": len(ai_high_impact_archive),
+            "recent_cutoff_dropped": ai_recent_cutoff_dropped,
+            "history_or_limit_count": len(ai_news),
+            "recent_not_selected_sample": [item.title for item in ai_news_recent if item.url not in ai_selected_urls][
+                :12
+            ],
+        }
+        return {"report": report, "payload": payload, "items": ai_news}
+
+    def failed_section(title: str, label: str) -> dict:
+        reason = next((error for error in reversed(errors["report"]) if error.startswith(label)), "未知錯誤")
+        report = AnalyzedReport(
+            title=title,
+            summary=f"⚠️ 本輪{title}產生失敗（{reason}），請查看 GitHub Actions log。",
+            items=[],
+            outlook="",
+            outlook_label="",
+            metadata={"mode": "failed", "section_error": reason},
+        )
+        payload = safe_call(
+            errors["delivery"],
+            f"{label} failure notice",
+            lambda: discord.send_report_failure_notice(title, reason),
+            {},
+        )
+        return {"report": report, "payload": payload, "items": []}
+
+    stock = safe_call(errors["report"], "stock section", stock_section, None) or failed_section(
+        "投資情報報告", "stock section"
     )
-    ai_news_recent = filter_recent_items(
-        ai_news_ranked,
-        max_age_days=Config.AI_NEWS_LOOKBACK_DAYS,
-        now=now,
-        require_published_at=True,
-    )
-    ai_high_impact_archive = filter_recent_items(
-        [item for item in ai_news_ranked if ai_impact_score(item) > 0],
-        max_age_days=Config.AI_HIGH_IMPACT_LOOKBACK_DAYS,
-        now=now,
-        require_published_at=True,
-    )
-    ai_recent_urls = {item.url for item in ai_news_recent}
-    ai_recent_cutoff_dropped = {"undated": 0, "older_than_window": 0}
-    for item in ai_news_ranked:
-        parsed = parse_published_at(item.published_at)
-        if parsed is None:
-            ai_recent_cutoff_dropped["undated"] += 1
-            continue
-        if item.url not in ai_recent_urls:
-            ai_recent_cutoff_dropped["older_than_window"] += 1
+    ai = safe_call(errors["report"], "ai section", ai_section, None) or failed_section("AI 技術前沿情報", "ai section")
+    stock_report, ai_report = stock["report"], ai["report"]
 
-    stock_news, skipped_stock_duplicates = state_store.filter_new_items("stock_news", stock_news_recent, limit=12)
-    ai_news, skipped_ai_duplicates = state_store.filter_new_items("ai_news", ai_news_recent, limit=30)
+    safe_call(errors["state"], "state remember stock_news", lambda: state_store.remember("stock_news", stock["items"]), None)
+    safe_call(errors["state"], "state remember ai_news", lambda: state_store.remember("ai_news", ai["items"]), None)
+    safe_call(errors["state"], "state save", state_store.save, None)
 
-    if not stock_news and stock_news_recent:
-        stock_news = stock_news_recent[:12]
-    if not ai_news and ai_news_recent:
-        ai_news = ai_news_recent[:30]
-    ai_news = select_ai_report_candidates(ai_news, limit=24)
-    ai_selected_urls = {item.url for item in ai_news}
-    ai_recent_not_selected = [item.title for item in ai_news_recent if item.url not in ai_selected_urls][:12]
-
-    stock_report = analyzer.analyze_stock_market(inputs.get("us_stocks", []) + inputs.get("tw_stocks", []), stock_news)
-    attach_report_appendix(stock_report, stock_news_recent, summarize_item=analyzer.build_stock_brief_item)
-    stock_report.metadata["history_duplicates_skipped"] = skipped_stock_duplicates
-    stock_notion_url = notion.create_stock_insight_report(stock_report)
-    stock_payload = discord.send_stock_and_analysis(
-        inputs.get("us_stocks", []),
-        inputs.get("tw_stocks", []),
-        stock_report,
-        stock_notion_url,
-    )
-
-    ai_report = analyzer.analyze_ai_tech(ai_news)
-    ai_appendix_pool = merge_unique_items(ai_news_recent, ai_high_impact_archive)
-    attach_report_appendix(ai_report, ai_appendix_pool, summarize_item=analyzer.build_ai_brief_item)
-    ai_report.metadata["history_duplicates_skipped"] = skipped_ai_duplicates
-    ai_notion_url = notion.create_ai_tech_report(ai_report)
-    ai_payload = discord.send_ai_tech_report(ai_report, ai_notion_url)
-
-    state_store.remember("stock_news", stock_news)
-    state_store.remember("ai_news", ai_news)
-    state_store.save()
+    errors["delivery"].extend(notion.errors + discord.errors)
+    meta.setdefault("stock_duplicates_skipped", 0)
+    meta.setdefault("ai_duplicates_skipped", 0)
+    meta["ai_errors"] = {
+        name: report.metadata["ai_error"]
+        for name, report in (("stock", stock_report), ("ai", ai_report))
+        if report.metadata.get("ai_error")
+    }
+    meta["errors"] = {kind: messages for kind, messages in errors.items() if messages}
 
     result = {
         "stock_report": stock_report,
-        "stock_payload": stock_payload,
+        "stock_payload": stock["payload"],
         "ai_report": ai_report,
-        "ai_payload": ai_payload,
-        "stock_items": [asdict(normalize_item(item)) for item in stock_news],
-        "ai_items": [asdict(normalize_item(item)) for item in ai_news],
-        "meta": {
-            "dry_run": dry_run,
-            "enable_ai": enable_ai,
-            "stock_duplicates_skipped": skipped_stock_duplicates,
-            "ai_duplicates_skipped": skipped_ai_duplicates,
-            "source_counts": inputs.get("_source_counts", {}),
-            "ai_pipeline": {
-                "raw_count": len(inputs.get("ai_news", [])),
-                "trimmed_count": len(ai_raw_trimmed),
-                "irrelevant_dropped": ai_irrelevant_count,
-                "irrelevant_dropped_sample": ai_irrelevant_sample,
-                "ranked_count": len(ai_news_ranked),
-                "recent_count": len(ai_news_recent),
-                "high_impact_archive_count": len(ai_high_impact_archive),
-                "recent_cutoff_dropped": ai_recent_cutoff_dropped,
-                "history_or_limit_count": len(ai_news),
-                "recent_not_selected_sample": ai_recent_not_selected,
-            },
-        },
+        "ai_payload": ai["payload"],
+        "stock_items": [asdict(normalize_item(item)) for item in stock["items"]],
+        "ai_items": [asdict(normalize_item(item)) for item in ai["items"]],
+        "meta": meta,
     }
     if Config.WRITE_ARTIFACTS:
-        dump_artifact(
-            Config.ARTIFACT_FILE,
-            {
-                "stock_report": asdict(stock_report),
-                "stock_payload": stock_payload,
-                "ai_report": asdict(ai_report),
-                "ai_payload": ai_payload,
-                "meta": result["meta"],
-            },
+        safe_call(
+            errors["state"],
+            "write artifact",
+            lambda: dump_artifact(
+                Config.ARTIFACT_FILE,
+                {
+                    "stock_report": asdict(stock_report),
+                    "stock_payload": stock["payload"],
+                    "ai_report": asdict(ai_report),
+                    "ai_payload": ai["payload"],
+                    "meta": meta,
+                },
+            ),
+            None,
         )
+    if meta["errors"]:
+        logger.error("Run finished with errors: %s", meta["errors"])
     return result
 
 
 def validate_runtime(*, enable_ai: bool, dry_run: bool) -> None:
     if enable_ai:
-        if not (Config.GEMINI_API_KEY or Config.GROQ_API_KEY):
-            raise RuntimeError("AI analysis requested but neither GEMINI_API_KEY nor GROQ_API_KEY is configured.")
+        if not (Config.GEMINI_API_KEY or Config.GROQ_API_KEY or Config.NVIDIA_API_KEY):
+            raise RuntimeError(
+                "AI analysis requested but none of GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY is configured."
+            )
 
     if not dry_run:
         if Config.ENABLE_DISCORD_DELIVERY and not Config.DISCORD_WEBHOOK_URL:

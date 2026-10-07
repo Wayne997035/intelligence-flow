@@ -49,6 +49,9 @@ class NotionSender:
             if Client and Config.NOTION_TOKEN and should_deliver(dry_run=self.dry_run, enabled=self.enabled)
             else None
         )
+        # Failures are recorded instead of raised: a Notion outage must not
+        # stop the Discord message (it is then sent without the Notion link).
+        self.errors: list[str] = []
 
     def create_stock_insight_report(self, report: AnalyzedReport) -> str | None:
         return self._create_report(
@@ -231,13 +234,19 @@ class NotionSender:
             return None
 
         title = self._build_title(title_prefix)
-        page = self.notion.pages.create(
-            parent={"database_id": Config.NOTION_PAGE_ID},
-            properties={"Name": {"title": [{"text": {"content": title}}]}},
-            children=self._cap_blocks(blocks),
-        )
+        try:
+            page = self.notion.pages.create(
+                parent={"database_id": Config.NOTION_PAGE_ID},
+                properties={"Name": {"title": [{"text": {"content": title}}]}},
+                children=self._cap_blocks(blocks),
+            )
+        except Exception as exc:
+            error = f"Notion {title_prefix}: {type(exc).__name__}: {str(exc)[:200]}"
+            logger.error("%s", error)
+            self.errors.append(error)
+            return None
         logger.info("Detailed report created in Notion.")
-        return page["url"]
+        return page.get("url")
 
     def _clean_appendix_snippet(self, text: str) -> str:
         if not text:

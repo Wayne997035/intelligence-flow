@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import requests
 
 from src.config import Config
@@ -25,6 +27,9 @@ class DiscordSender:
         self.dry_run = Config.DRY_RUN if dry_run is None else dry_run
         self.enabled = Config.ENABLE_DISCORD_DELIVERY if enabled is None else enabled
         self.session = session or requests.Session()
+        # Delivery failures are recorded instead of raised so one failed send
+        # never stops the other report from being delivered.
+        self.errors: list[str] = []
 
     def send_stock_and_analysis(
         self,
@@ -43,6 +48,16 @@ class DiscordSender:
         notion_url: str | None,
     ) -> dict:
         payload = self._build_ai_payload(report, notion_url)
+        self._deliver(payload)
+        return payload
+
+    def send_report_failure_notice(self, title: str, reason: str) -> dict:
+        """Last resort when a report could not be built at all: still tell the
+        channel that this run happened and why the report is missing."""
+        payload = self._build_payload(
+            f"⚠️ {title}產生失敗",
+            f"本輪{title}無法產生：{self._truncate_text(reason, 300)}\n請查看 GitHub Actions log。",
+        )
         self._deliver(payload)
         return payload
 
@@ -208,10 +223,34 @@ class DiscordSender:
             logger.warning("Discord webhook missing, skipping send.")
             return
 
-        response = self.session.post(
-            Config.DISCORD_WEBHOOK_URL,
-            json=payload,
-            timeout=10,
-        )
-        response.raise_for_status()
-        logger.info("Sent report to Discord.")
+        title = (payload.get("embeds") or [{}])[0].get("title", "report")
+        for attempt in (1, 2):
+            response = None
+            try:
+                response = self.session.post(Config.DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+                response.raise_for_status()
+                logger.info("Sent report to Discord.")
+                return
+            except requests.HTTPError as exc:
+                status = getattr(exc.response if exc.response is not None else response, "status_code", None)
+                error = f"Discord {title}: HTTP {status} {str(exc)[:200]}"
+                retryable = isinstance(status, int) and (status == 429 or status >= 500)
+                wait_seconds = self._retry_after(exc.response if exc.response is not None else response)
+            except Exception as exc:
+                error = f"Discord {title}: {type(exc).__name__}: {exc}"
+                retryable, wait_seconds = True, 2.0
+            if attempt == 1 and retryable:
+                logger.warning("%s; retrying once in %.1fs.", error, wait_seconds)
+                time.sleep(wait_seconds)
+                continue
+            logger.error("%s", error)
+            self.errors.append(error)
+            return
+
+    @staticmethod
+    def _retry_after(response) -> float:
+        try:
+            value = float(response.headers.get("Retry-After") or (response.json() or {}).get("retry_after") or 2)
+        except (TypeError, ValueError, AttributeError):
+            value = 2.0
+        return max(0.5, min(value, 10.0))
