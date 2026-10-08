@@ -419,6 +419,131 @@ class TestFailover(unittest.TestCase):
         self.assertGreaterEqual(settings.provider_budget_seconds, 600)
 
 
+# Real error shapes from the failed scheduled run of 2026-10-08 (IDs redacted).
+_GROQ_TPM_429 = (
+    "Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization "
+    "`org_***` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5344, Requested 6059. "
+    "Please try again in 25.5225s.', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}"
+)
+_GROQ_TOO_LARGE_429 = (
+    "Error code: 429 - {'error': {'message': \"Request too large for model `qwen/qwen3.8-27b` on output tokens per "
+    "minute (OTPM): Limit 1000, Requested 1557.\", 'type': 'tokens', 'code': 'rate_limit_exceeded'}}"
+)
+
+
+class TestRateLimitAndValidation(unittest.TestCase):
+    def _groq(self, *ids):
+        groq = MagicMock()
+        groq.models.list.return_value = SimpleNamespace(data=[SimpleNamespace(id=i) for i in ids])
+        return groq
+
+    def test_short_rate_limit_is_waited_out_on_the_same_model(self):
+        groq = self._groq("openai/gpt-oss-120b", "openai/gpt-oss-20b")
+        groq.chat.completions.create.side_effect = [Exception(_GROQ_TPM_429), _groq_response(_VALID_JSON)]
+        router = _router(groq=groq, groq_model="auto")
+        with patch("src.ai.llm_router.time.sleep") as sleep:
+            result = router.complete("p")
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 26.5225)
+        self.assertEqual(result.model, "openai/gpt-oss-120b")
+        models = [call.kwargs["model"] for call in groq.chat.completions.create.call_args_list]
+        self.assertEqual(models, ["openai/gpt-oss-120b", "openai/gpt-oss-120b"])
+
+    def test_long_or_repeated_rate_limit_switches_model(self):
+        groq = self._groq("openai/gpt-oss-120b", "openai/gpt-oss-20b")
+        groq.chat.completions.create.side_effect = [
+            Exception(_GROQ_TPM_429),
+            Exception(_GROQ_TPM_429),
+            _groq_response(_VALID_JSON),
+        ]
+        router = _router(groq=groq, groq_model="auto")
+        with patch("src.ai.llm_router.time.sleep") as sleep:
+            result = router.complete("p")
+        self.assertEqual(sleep.call_count, 1)  # waited once, then moved on
+        self.assertEqual(result.model, "openai/gpt-oss-20b")
+
+        groq = self._groq("openai/gpt-oss-120b", "openai/gpt-oss-20b")
+        groq.chat.completions.create.side_effect = [Exception(_GROQ_TPM_429), _groq_response(_VALID_JSON)]
+        router = _router(groq=groq, groq_model="auto", rate_limit_wait_seconds=10)
+        with patch("src.ai.llm_router.time.sleep") as sleep:
+            result = router.complete("p")
+        sleep.assert_not_called()
+        self.assertEqual(result.model, "openai/gpt-oss-20b")
+
+    def test_request_larger_than_the_limit_is_not_waited_and_skipped_for_the_run(self):
+        groq = self._groq("qwen/qwen3.8-27b", "allam-2-7b")
+        groq.chat.completions.create.side_effect = [Exception(_GROQ_TOO_LARGE_429), _groq_response(_VALID_JSON)]
+        router = _router(groq=groq, groq_model="auto")
+        with patch("src.ai.llm_router.time.sleep") as sleep:
+            router.complete("p")
+        sleep.assert_not_called()
+        self.assertNotIn("qwen/qwen3.8-27b", router.attempt_order("groq"))
+
+    def test_rejected_answer_moves_to_next_model_and_provider(self):
+        http = MagicMock()
+        listing = MagicMock(status_code=200)
+        listing.json.return_value = {"data": [{"id": "openai/gpt-oss-20b"}]}
+        http.get.return_value = listing
+        prose = MagicMock(status_code=200)
+        prose.json.return_value = {"choices": [{"message": {"content": "Here is the analysis you asked for."}}]}
+        http.post.return_value = prose
+        gemini = MagicMock()
+        gemini.models.generate_content.return_value = SimpleNamespace(text=_VALID_JSON)
+        router = _router(
+            gemini=gemini, http=http, nvidia_api_key="nvapi", nvidia_enabled=True, provider_order=("nvidia", "gemini")
+        )
+        result = router.complete("p", accept=lambda text: text.lstrip().startswith("{"))
+        self.assertEqual(result.provider, "gemini")
+        self.assertTrue(any("回應格式不符" in error for error in result.errors))
+
+    def test_gpt_oss_uses_low_reasoning_effort_only(self):
+        groq = self._groq("openai/gpt-oss-120b")
+        groq.chat.completions.create.return_value = _groq_response(_VALID_JSON)
+        _router(groq=groq, groq_model="auto").complete("p")
+        self.assertEqual(groq.chat.completions.create.call_args.kwargs["reasoning_effort"], "low")
+        groq = MagicMock()
+        groq.chat.completions.create.return_value = _groq_response(_VALID_JSON)
+        _router(groq=groq).complete("p")
+        self.assertNotIn("reasoning_effort", groq.chat.completions.create.call_args.kwargs)
+
+    def test_replay_of_2026_10_08_failure_now_produces_an_ai_report(self):
+        """120b rate limited, 20b ran out of tokens, qwen too large, NVIDIA
+        answered prose: the analyzer must still end up with an AI report."""
+        groq = self._groq("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b")
+        groq.chat.completions.create.side_effect = [
+            Exception(_GROQ_TPM_429),
+            Exception(_GROQ_TPM_429),
+            Exception("Error code: 400 - {'error': {'message': 'Failed to generate JSON.', 'code': 'json_validate_failed'}}"),
+            Exception(_GROQ_TOO_LARGE_429),
+        ]
+        http = MagicMock()
+        listing = MagicMock(status_code=200)
+        listing.json.return_value = {"data": [{"id": "openai/gpt-oss-20b"}]}
+        http.get.return_value = listing
+        prose = MagicMock(status_code=200)
+        prose.json.return_value = {"choices": [{"message": {"content": "以下是分析：GPT-6 很重要。"}}]}
+        http.post.return_value = prose
+        gemini = MagicMock()
+        gemini.models.generate_content.return_value = SimpleNamespace(text=_VALID_JSON)
+        router = _router(
+            gemini=gemini,
+            groq=groq,
+            http=http,
+            groq_model="auto",
+            nvidia_api_key="nvapi",
+            nvidia_enabled=True,
+            provider_order=("groq", "nvidia", "gemini"),
+        )
+        analyzer = AIAnalyzer(enable_ai=False)
+        analyzer.enable_ai = True
+        analyzer.router = router
+        with patch("src.ai.llm_router.time.sleep"):
+            report = analyzer.analyze_ai_tech(_news())
+        self.assertNotIn("ai_error", report.metadata)
+        self.assertEqual(report.summary, "中文摘要")
+        self.assertEqual(analyzer.last_provider, "gemini:gemini-flash-latest")
+
+
 class TestRouterRobustness(unittest.TestCase):
     def test_no_provider_configured(self):
         result = _router().complete("p")

@@ -316,7 +316,13 @@ class AIAnalyzer:
             return fallback()
 
         self.ai_errors = []
-        raw_response = self._get_ai_response(json.dumps(prompt, ensure_ascii=False))
+        def usable(text: str) -> bool:
+            return self._parse_response(text, title=title, outlook_label=outlook_label, item_limit=item_limit) is not None
+
+        # Answers that do not parse into a report are rejected inside the
+        # router, so the next model / provider is tried instead of the whole
+        # report falling back (NVIDIA gpt-oss-20b, 2026-10-08).
+        raw_response = self._get_ai_response(json.dumps(prompt, ensure_ascii=False), accept=usable)
         if not raw_response:
             return self._mark_ai_failure(fallback())
 
@@ -1017,8 +1023,8 @@ class AIAnalyzer:
         parsed = urlsplit(raw)
         return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
-    def _get_ai_response(self, prompt: str) -> str | None:
-        result = self.router.complete(prompt, json_schema=self._REPORT_RESPONSE_SCHEMA)
+    def _get_ai_response(self, prompt: str, accept: Callable[[str], bool] | None = None) -> str | None:
+        result = self.router.complete(prompt, json_schema=self._REPORT_RESPONSE_SCHEMA, accept=accept)
         self.ai_errors = list(result.errors)
         self.last_provider = f"{result.provider}:{result.model}" if result.ok else None
         if result.ok:

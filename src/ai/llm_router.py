@@ -124,6 +124,10 @@ class LLMSettings:
     nvidia_timeout_seconds: float = 600
     # Wall-clock cap per provider per request before moving to the next one.
     provider_budget_seconds: float = 600
+    # A per-minute rate limit that names a short wait ("try again in 25s") is
+    # waited out once on the same model instead of switching: the next model
+    # is usually a weaker one (Groq gpt-oss-120b -> 20b, 2026-10-08).
+    rate_limit_wait_seconds: float = 60
     # Probe-based model choice (choose_best_model) before the first real call.
     # Off by default: on free tiers the probes spend rate limits and daily
     # quotas, and a small probe can pick a model that then fails the
@@ -261,7 +265,11 @@ class LLMRouter:
         return [name for name in self.settings.provider_order if available.get(name)]
 
     # --------------------------------------------------------------- routing
-    def complete(self, prompt: str, *, json_schema: dict | None = None) -> LLMResult:
+    def complete(
+        self, prompt: str, *, json_schema: dict | None = None, accept: Callable[[str], bool] | None = None
+    ) -> LLMResult:
+        """`accept` checks an answer; one it rejects (e.g. not valid JSON)
+        counts as a failure and the walk moves on to the next model."""
         result = LLMResult()
         if not self.configured_providers():
             result.errors.append("沒有可用的 AI 供應商（未設定 API key）")
@@ -271,34 +279,48 @@ class LLMRouter:
             if name not in PROVIDERS:
                 self.log.warning("Unknown AI provider %r in provider order; skipping.", provider)
                 continue
-            text = self.try_provider(name, prompt, json_schema=json_schema, errors=result.errors)
+            text = self.try_provider(name, prompt, json_schema=json_schema, errors=result.errors, accept=accept)
             if text:
                 result.text, result.provider, result.model = text, name, self.last_model.get(name, self.models[name])
                 return result
         return result
 
     def try_provider(
-        self, name: str, prompt: str, *, json_schema: dict | None = None, errors: list[str] | None = None
+        self,
+        name: str,
+        prompt: str,
+        *,
+        json_schema: dict | None = None,
+        errors: list[str] | None = None,
+        accept: Callable[[str], bool] | None = None,
     ) -> str | None:
         errors = errors if errors is not None else []
         try:
             if name == "gemini":
-                return self._try_gemini(prompt, json_schema, errors)
+                return self._try_gemini(prompt, json_schema, errors, accept)
             if name == "groq":
-                return self._try_groq(prompt, errors)
+                return self._try_groq(prompt, errors, accept)
             if name == "nvidia":
-                return self._try_nvidia(prompt, errors)
+                return self._try_nvidia(prompt, errors, accept)
         except Exception as exc:  # defensive: a provider bug must not stop the chain
             errors.append(short_error(name, exc))
             self.log.exception("AI provider %s crashed", name)
         return None
 
     # ------------------------------------------------------- candidate walk
-    def _walk(self, provider: str, call: Callable[[str], str | None], errors: list[str]) -> str | None:
+    def _walk(
+        self,
+        provider: str,
+        call: Callable[[str], str | None],
+        errors: list[str],
+        accept: Callable[[str], bool] | None = None,
+    ) -> str | None:
         """Try this provider's candidate models in order until one answers.
 
-        Every failure (rate limit, overload, timeout, retired model, bad
-        output) moves on to the next candidate; the provider as a whole gets
+        Every failure (rate limit, overload, timeout, retired model, an
+        answer `accept` rejects) moves on to the next candidate, except a
+        per-minute rate limit with a short stated wait, which is waited out
+        once on the same model. The provider as a whole gets
         `provider_budget_seconds`, after which the chain moves to the next
         provider instead of waiting out more timeouts. Models that cannot be
         called at all (404 / exhausted daily quota) are skipped for the rest
@@ -308,6 +330,7 @@ class LLMRouter:
         deadline = time.monotonic() + self.settings.provider_budget_seconds
         cap = max(1, _MAX_ATTEMPTS[provider](self.settings))
         tried: set[str] = set()
+        waited: set[str] = set()
         while len(tried) < cap:
             # Re-read the order each time: a pinned model that turns out to be
             # retired falls back to the auto-ranked candidates.
@@ -324,11 +347,25 @@ class LLMRouter:
                 text = call(model)
                 if not text or not text.strip():
                     raise RuntimeError("empty response")
+                if accept is not None and not accept(text):
+                    raise InvalidResponse("回應格式不符（不是有效的報告 JSON）")
             except Exception as exc:
                 self.log.warning("%s %s failed: %s", label, model, exc)
                 errors.append(short_error(f"{label}({model})", exc))
                 if _is_unusable_for_run(exc):
                     self._dead.add((provider, model))
+                    continue
+                wait = rate_limit_wait(exc)
+                if (
+                    wait is not None
+                    and model not in waited
+                    and wait <= self.settings.rate_limit_wait_seconds
+                    and time.monotonic() + wait < deadline
+                ):
+                    waited.add(model)
+                    tried.discard(model)
+                    self.log.info("%s %s rate limited; waiting %.0fs and retrying it.", label, model, wait)
+                    time.sleep(wait)
                 continue
             self._promote(provider, model)
             self.last_model[provider] = model
@@ -356,7 +393,9 @@ class LLMRouter:
             self.log.info("%s model in use: %s", _LABELS[provider], model)
 
     # ---------------------------------------------------------------- gemini
-    def _try_gemini(self, prompt: str, json_schema: dict | None, errors: list[str]) -> str | None:
+    def _try_gemini(
+        self, prompt: str, json_schema: dict | None, errors: list[str], accept: Callable[[str], bool] | None = None
+    ) -> str | None:
         if self.gemini_client is None:
             return None
 
@@ -370,7 +409,7 @@ class LLMRouter:
             response = self.gemini_client.models.generate_content(model=model, contents=prompt, config=config)
             return getattr(response, "text", None)
 
-        return self._walk("gemini", call, errors)
+        return self._walk("gemini", call, errors, accept)
 
     def gemini_attempt_order(self) -> list[str]:
         return self.attempt_order("gemini")
@@ -407,21 +446,28 @@ class LLMRouter:
         return [name for _, name in sorted(ranked)]
 
     # ------------------------------------------------------------------ groq
-    def _try_groq(self, prompt: str, errors: list[str]) -> str | None:
+    def _try_groq(self, prompt: str, errors: list[str], accept: Callable[[str], bool] | None = None) -> str | None:
         if self.groq_client is None:
             return None
         self._maybe_select("groq")
 
         def call(model: str) -> str | None:
+            extra: dict[str, Any] = {}
+            if "gpt-oss" in model:
+                # Default (medium) reasoning spent the token budget before the
+                # JSON was finished (gpt-oss-20b, 2026-10-08) and doubles the
+                # tokens counted against the per-minute limit.
+                extra["reasoning_effort"] = "low"
             response = self.groq_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model=model,
                 # Without JSON mode models often prefix prose around the JSON.
                 response_format={"type": "json_object"},
+                **extra,
             )
             return response.choices[0].message.content
 
-        return self._walk("groq", call, errors)
+        return self._walk("groq", call, errors, accept)
 
     def groq_candidates(self) -> list[str]:
         if self.groq_client is None:
@@ -435,7 +481,7 @@ class LLMRouter:
         return rank_chat_models([i for i in ids if i], _GROQ_FAMILY_RANK, _GROQ_NON_CHAT_MARKERS)
 
     # ---------------------------------------------------------------- nvidia
-    def _try_nvidia(self, prompt: str, errors: list[str]) -> str | None:
+    def _try_nvidia(self, prompt: str, errors: list[str], accept: Callable[[str], bool] | None = None) -> str | None:
         if not self.settings.nvidia_api_key:
             return None
         if not self.settings.nvidia_enabled:
@@ -459,7 +505,7 @@ class LLMRouter:
                 raise RuntimeError(f"{response.status_code} {response.text[:200]}")
             return strip_reasoning(response.json()["choices"][0]["message"]["content"])
 
-        return self._walk("nvidia", call, errors)
+        return self._walk("nvidia", call, errors, accept)
 
     def nvidia_attempt_order(self) -> list[str]:
         return self.attempt_order("nvidia")
@@ -508,7 +554,24 @@ def _is_unusable_for_run(exc: Exception) -> bool:
         or "no longer available" in lowered
         or ("resource_exhausted" in lowered and "per day" in lowered.replace("perday", "per day"))
         or "requestsperday" in lowered
+        # A single request bigger than the per-minute limit never fits, so
+        # waiting does not help (qwen on Groq: output limit 1000 tokens).
+        or "request too large" in lowered
     )
+
+
+class InvalidResponse(RuntimeError):
+    """The model answered, but not in a usable form."""
+
+
+def rate_limit_wait(exc: Exception) -> float | None:
+    """Seconds a 429 asks to wait ("try again in 25.5s" on Groq, "retry
+    in 23s" on Gemini), or None when it is not such a rate limit."""
+    text = str(exc)
+    if "429" not in text and "rate limit" not in text.lower():
+        return None
+    match = re.search(r"(?:try again|retry) in ([0-9.]+)\s*s", text, re.I)
+    return float(match.group(1)) + 1 if match else None
 
 
 # --------------------------------------------------------- model selection
